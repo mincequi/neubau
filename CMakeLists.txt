@@ -34,6 +34,17 @@ CPMAddPackage(
 
 include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
 
+add_library(neubau_common INTERFACE)
+add_library(neubau::common ALIAS neubau_common)
+
+target_include_directories(
+    neubau_common
+    INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(neubau_common INTERFACE RPP::rpp)
+target_compile_features(neubau_common INTERFACE cxx_std_20)
+
 cmrc_add_resource_library(
     neubau_resources
     ALIAS neubau::resources
@@ -55,6 +66,14 @@ target_link_libraries(
     neubau
     PRIVATE
         ${NEUBAU_LIBHV_TARGET}
+        neubau::common
         neubau::resources
-        RPP::rpp
 )
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(common_flow_test tests/common_flow_test.cpp)
+    target_link_libraries(common_flow_test PRIVATE neubau::common)
+    add_test(NAME common_flow_test COMMAND common_flow_test)
+endif()
