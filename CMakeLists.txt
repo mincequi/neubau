@@ -46,13 +46,11 @@ target_link_libraries(neubau_common INTERFACE RPP::rpp)
 target_compile_features(neubau_common INTERFACE cxx_std_20)
 
 cmrc_add_resource_library(
-    neubau_resources
-    ALIAS neubau::resources
-    WHENCE resources
-    resources/index.html
+    neubau_webapp_resources
+    ALIAS neubau::webapp_resources
+    WHENCE webapp
+    webapp/index.html
 )
-
-add_executable(neubau src/main.cpp)
 
 if(TARGET hv)
     set(NEUBAU_LIBHV_TARGET hv)
@@ -62,12 +60,28 @@ else()
     message(FATAL_ERROR "libhv target not available")
 endif()
 
+add_library(neubau_webapp webapp/WebAppService.cpp)
+add_library(neubau::webapp ALIAS neubau_webapp)
+
+target_include_directories(
+    neubau_webapp
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(
+    neubau_webapp
+    PRIVATE
+        ${NEUBAU_LIBHV_TARGET}
+        neubau::webapp_resources
+)
+
+add_executable(neubau src/main.cpp)
+
 target_link_libraries(
     neubau
     PRIVATE
-        ${NEUBAU_LIBHV_TARGET}
         neubau::common
-        neubau::resources
+        neubau::webapp
 )
 
 include(CTest)
