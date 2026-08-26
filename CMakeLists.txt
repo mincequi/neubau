@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(neubau VERSION 0.1.0 LANGUAGES CXX)
+project(neubau VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CPM.cmake")
+add_subdirectory(cmake)
 
 CPMAddPackage(
     NAME libhv
@@ -32,62 +32,23 @@ CPMAddPackage(
     VERSION 2.2.3
 )
 
+CPMAddPackage(
+    NAME mdns
+    GITHUB_REPOSITORY mjansson/mdns
+    GIT_TAG 1.4.3
+    OPTIONS
+        "MDNS_BUILD_EXAMPLE OFF"
+)
+
 include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
-
-add_library(neubau_common INTERFACE)
-add_library(neubau::common ALIAS neubau_common)
-
-target_include_directories(
-    neubau_common
-    INTERFACE
-        "${CMAKE_CURRENT_SOURCE_DIR}"
-)
-target_link_libraries(neubau_common INTERFACE RPP::rpp)
-target_compile_features(neubau_common INTERFACE cxx_std_20)
-
-cmrc_add_resource_library(
-    neubau_webapp_resources
-    ALIAS neubau::webapp_resources
-    WHENCE webapp
-    webapp/index.html
-)
-
-if(TARGET hv)
-    set(NEUBAU_LIBHV_TARGET hv)
-elseif(TARGET hv_static)
-    set(NEUBAU_LIBHV_TARGET hv_static)
-else()
-    message(FATAL_ERROR "libhv target not available")
-endif()
-
-add_library(neubau_webapp webapp/WebAppService.cpp)
-add_library(neubau::webapp ALIAS neubau_webapp)
-
-target_include_directories(
-    neubau_webapp
-    PUBLIC
-        "${CMAKE_CURRENT_SOURCE_DIR}"
-)
-target_link_libraries(
-    neubau_webapp
-    PRIVATE
-        ${NEUBAU_LIBHV_TARGET}
-        neubau::webapp_resources
-)
-
-add_executable(neubau src/main.cpp)
-
-target_link_libraries(
-    neubau
-    PRIVATE
-        neubau::common
-        neubau::webapp
-)
 
 include(CTest)
 
+add_subdirectory(common)
+add_subdirectory(shelly)
+add_subdirectory(webapp)
+add_subdirectory(src)
+
 if(BUILD_TESTING)
-    add_executable(common_flow_test tests/common_flow_test.cpp)
-    target_link_libraries(common_flow_test PRIVATE neubau::common)
-    add_test(NAME common_flow_test COMMAND common_flow_test)
+    add_subdirectory(tests)
 endif()
