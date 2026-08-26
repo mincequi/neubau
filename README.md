@@ -1,7 +1,8 @@
 # neubau
 
 Starter CMake-based C++ scaffold using CPM.cmake for dependencies, libhv as the
-application framework, and cmrc for embedded resources.
+application framework, cmrc for embedded resources, and ReactivePlusPlus for
+reactive programming.
 
 ## Layout
 

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(neubau VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -26,6 +26,12 @@ CPMAddPackage(
     DOWNLOAD_ONLY YES
 )
 
+CPMAddPackage(
+    NAME ReactivePlusPlus
+    GITHUB_REPOSITORY AlexInLog/ReactivePlusPlus
+    VERSION 2.2.3
+)
+
 include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
 
 cmrc_add_resource_library(
@@ -45,4 +51,10 @@ else()
     message(FATAL_ERROR "libhv target not available")
 endif()
 
-target_link_libraries(neubau PRIVATE ${NEUBAU_LIBHV_TARGET} neubau::resources)
+target_link_libraries(
+    neubau
+    PRIVATE
+        ${NEUBAU_LIBHV_TARGET}
+        neubau::resources
+        RPP::rpp
+)
