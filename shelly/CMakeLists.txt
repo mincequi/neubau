@@ -10,4 +10,5 @@ target_include_directories(
     PUBLIC
         "${PROJECT_SOURCE_DIR}"
 )
+target_link_libraries(neubau_shelly PUBLIC neubau::common)
 target_compile_features(neubau_shelly PUBLIC cxx_std_20)

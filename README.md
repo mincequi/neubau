@@ -51,6 +51,13 @@ timeout. Call `stop()` from another thread to end an active discovery early.
 Responses include the service instance, endpoint, IPv4/IPv6 addresses, TXT
 metadata, and TTL.
 
+## Shelly discovery
+
+At startup, the application searches `_shelly._tcp` and `_http._tcp` in
+parallel. Shelly-specific advertisements are merged by device ID and printed
+with their endpoint, model, generation, and firmware version before the web
+server starts.
+
 ## Build
 
 ```bash
