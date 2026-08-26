@@ -1,15 +1,19 @@
 # neubau
 
 Starter CMake-based C++ scaffold using CPM.cmake for dependencies, libhv as the
-application framework, cmrc for embedded resources, and ReactivePlusPlus for
-reactive programming.
+application framework, cmrc for the embedded web application, and
+ReactivePlusPlus for reactive programming.
 
 ## Layout
 
 - `cmake/` - CMake helper modules
 - `common/` - shared application utilities, including the Kotlin Flow-style API
-- `resources/` - embedded application assets
 - `src/` - application sources
+- `webapp/` - web server code and placeholder for the future Flutter web app
+
+The content of `webapp/` will become a Flutter application. For now,
+`webapp/index.html` is embedded as a placeholder and served by
+`webapp/WebAppService.cpp`.
 
 ## Flow API
 
