@@ -26,6 +26,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <ostream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -54,6 +55,7 @@ constexpr NativeSocket invalidSocket = -1;
 constexpr std::uint8_t encapsulatedInterfaceTransport{0x2b};
 constexpr std::uint8_t readDeviceIdentification{0x0e};
 constexpr std::uint8_t basicDeviceIdentification{0x01};
+constexpr std::uint8_t readHoldingRegistersFunction{0x03};
 constexpr std::size_t maxModbusPduLength{253};
 
 class SocketHandle {
@@ -301,7 +303,20 @@ std::array<std::uint8_t, 11> deviceIdRequest(
     return request;
 }
 
-std::optional<ModbusThing> identify(
+std::array<std::uint8_t, 12> holdingRegisterProbe(
+    std::uint16_t transactionId,
+    std::uint8_t unitId) {
+    std::array<std::uint8_t, 12> request{};
+    writeU16(request.data(), transactionId);
+    writeU16(request.data() + 4, 6);
+    request[6] = unitId;
+    request[7] = readHoldingRegistersFunction;
+    writeU16(request.data() + 8, 0);
+    writeU16(request.data() + 10, 1);
+    return request;
+}
+
+std::optional<ModbusThing> identifyWithMei(
     const std::string& address,
     const ModbusDiscoveryOptions& options,
     std::uint8_t unitId) {
@@ -400,6 +415,69 @@ std::optional<ModbusThing> identify(
     return thing;
 }
 
+std::optional<ModbusThing> identifyWithReadProbe(
+    const std::string& address,
+    const ModbusDiscoveryOptions& options,
+    std::uint8_t unitId) {
+    auto socket = connectTo(
+        address,
+        options.port,
+        options.connectTimeout,
+        options.responseTimeout);
+    if (!socket) {
+        return std::nullopt;
+    }
+
+    constexpr std::uint16_t transactionId = 1;
+    const auto request = holdingRegisterProbe(transactionId, unitId);
+    if (!sendAll(socket->get(), request.data(), request.size())) {
+        return std::nullopt;
+    }
+
+    std::array<std::uint8_t, 7> header{};
+    if (!receiveAll(socket->get(), header.data(), header.size())
+        || readU16(header.data()) != transactionId
+        || readU16(header.data() + 2) != 0 || header[6] != unitId) {
+        return std::nullopt;
+    }
+
+    const auto responseLength = readU16(header.data() + 4);
+    if (responseLength < 2 || responseLength - 1 > maxModbusPduLength) {
+        return std::nullopt;
+    }
+
+    std::vector<std::uint8_t> pdu(responseLength - 1);
+    if (!receiveAll(socket->get(), pdu.data(), pdu.size())
+        || pdu.empty()) {
+        return std::nullopt;
+    }
+
+    ModbusThing thing{
+        .address = address,
+        .port = options.port,
+        .unitId = unitId,
+    };
+    if (pdu[0] == readHoldingRegistersFunction) {
+        return thing;
+    }
+    if (pdu[0] == (readHoldingRegistersFunction | 0x80U)
+        && pdu.size() >= 2) {
+        thing.exceptionCode = pdu[1];
+        return thing;
+    }
+    return std::nullopt;
+}
+
+std::optional<ModbusThing> identify(
+    const std::string& address,
+    const ModbusDiscoveryOptions& options,
+    std::uint8_t unitId) {
+    if (auto identified = identifyWithMei(address, options, unitId)) {
+        return identified;
+    }
+    return identifyWithReadProbe(address, options, unitId);
+}
+
 std::uint32_t parseIpv4(const std::string& address) {
     in_addr parsed{};
     if (inet_pton(AF_INET, address.c_str(), &parsed) != 1) {
@@ -415,6 +493,41 @@ std::string formatIpv4(std::uint32_t address) {
         throw std::runtime_error("failed to format IPv4 address");
     }
     return output.data();
+}
+
+std::optional<std::uint32_t> primaryIpv4Address() {
+    ensureSocketsInitialized();
+    SocketHandle socket{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
+    if (!socket) {
+        return std::nullopt;
+    }
+
+    sockaddr_in destination{};
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(53);
+    if (inet_pton(AF_INET, "8.8.8.8", &destination.sin_addr) != 1
+        || connect(
+               socket.get(),
+               reinterpret_cast<const sockaddr*>(&destination),
+               sizeof(destination))
+            != 0) {
+        return std::nullopt;
+    }
+
+    sockaddr_in local{};
+#ifdef _WIN32
+    int localLength = sizeof(local);
+#else
+    socklen_t localLength = sizeof(local);
+#endif
+    if (getsockname(
+            socket.get(),
+            reinterpret_cast<sockaddr*>(&local),
+            &localLength)
+        != 0) {
+        return std::nullopt;
+    }
+    return ntohl(local.sin_addr.s_addr);
 }
 
 void validateOptions(const ModbusDiscoveryOptions& options) {
@@ -439,6 +552,90 @@ void validateOptions(const ModbusDiscoveryOptions& options) {
 }
 
 } // namespace
+
+std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing) {
+    stream << "Modbus " << thing.address << ':' << thing.port
+           << " unit " << static_cast<unsigned int>(thing.unitId) << '\n';
+    if (thing.hasDeviceIdentification) {
+        if (!thing.vendorName.empty()) {
+            stream << "  vendor: " << thing.vendorName << '\n';
+        }
+        if (!thing.productCode.empty()) {
+            stream << "  product: " << thing.productCode << '\n';
+        }
+        if (!thing.revision.empty()) {
+            stream << "  revision: " << thing.revision << '\n';
+        }
+    } else {
+        stream << "  device identification unavailable";
+        if (thing.exceptionCode) {
+            stream << " (Modbus exception "
+                   << static_cast<unsigned int>(*thing.exceptionCode) << ')';
+        }
+        stream << '\n';
+    }
+    return stream;
+}
+
+std::optional<std::vector<std::uint16_t>> readHoldingRegisters(
+    const ModbusThing& thing,
+    std::uint16_t startAddress,
+    std::uint16_t registerCount,
+    std::chrono::milliseconds connectTimeout,
+    std::chrono::milliseconds responseTimeout) {
+    if (registerCount == 0 || registerCount > 125) {
+        throw std::invalid_argument(
+            "Modbus reads require between 1 and 125 registers");
+    }
+
+    auto socket = connectTo(
+        thing.address,
+        thing.port,
+        connectTimeout,
+        responseTimeout);
+    if (!socket) {
+        return std::nullopt;
+    }
+
+    constexpr std::uint16_t transactionId = 1;
+    std::array<std::uint8_t, 12> request{};
+    writeU16(request.data(), transactionId);
+    writeU16(request.data() + 4, 6);
+    request[6] = thing.unitId;
+    request[7] = readHoldingRegistersFunction;
+    writeU16(request.data() + 8, startAddress);
+    writeU16(request.data() + 10, registerCount);
+    if (!sendAll(socket->get(), request.data(), request.size())) {
+        return std::nullopt;
+    }
+
+    std::array<std::uint8_t, 7> header{};
+    if (!receiveAll(socket->get(), header.data(), header.size())
+        || readU16(header.data()) != transactionId
+        || readU16(header.data() + 2) != 0
+        || header[6] != thing.unitId) {
+        return std::nullopt;
+    }
+
+    const auto responseLength = readU16(header.data() + 4);
+    if (responseLength < 2 || responseLength - 1 > maxModbusPduLength) {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> pdu(responseLength - 1);
+    if (!receiveAll(socket->get(), pdu.data(), pdu.size())
+        || pdu.size() < 2 || pdu[0] != readHoldingRegistersFunction
+        || pdu[1] != registerCount * 2
+        || pdu.size() != static_cast<std::size_t>(pdu[1]) + 2) {
+        return std::nullopt;
+    }
+
+    std::vector<std::uint16_t> registers;
+    registers.reserve(registerCount);
+    for (std::size_t offset = 2; offset < pdu.size(); offset += 2) {
+        registers.push_back(readU16(pdu.data() + offset));
+    }
+    return registers;
+}
 
 ModbusDiscovery::ModbusDiscovery(ModbusDiscoveryOptions options)
     : state_{std::make_shared<State>()}
@@ -586,6 +783,31 @@ std::vector<std::string> ModbusDiscovery::addressesInCidr(
             formatIpv4(first + static_cast<std::uint32_t>(offset)));
     }
     return addresses;
+}
+
+std::string ModbusDiscovery::cidrForAddress(
+    const std::string& address,
+    std::uint8_t prefix) {
+    if (prefix > 32) {
+        throw std::invalid_argument("invalid IPv4 prefix");
+    }
+    const auto ip = parseIpv4(address);
+    const auto mask = prefix == 0
+        ? 0U
+        : std::numeric_limits<std::uint32_t>::max() << (32U - prefix);
+    return formatIpv4(ip & mask) + '/' + std::to_string(prefix);
+}
+
+std::optional<std::string> ModbusDiscovery::primaryIpv4Cidr(
+    std::uint8_t prefix) {
+    if (prefix > 32) {
+        throw std::invalid_argument("invalid IPv4 prefix");
+    }
+    const auto address = primaryIpv4Address();
+    if (!address) {
+        return std::nullopt;
+    }
+    return cidrForAddress(formatIpv4(*address), prefix);
 }
 
 void ModbusDiscovery::stop() noexcept {

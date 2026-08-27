@@ -6,5 +6,5 @@ target_include_directories(
     PUBLIC
         "${PROJECT_SOURCE_DIR}"
 )
-target_link_libraries(neubau_sunspec PUBLIC neubau::common)
+target_link_libraries(neubau_sunspec PUBLIC neubau::modbus)
 target_compile_features(neubau_sunspec PUBLIC cxx_std_20)

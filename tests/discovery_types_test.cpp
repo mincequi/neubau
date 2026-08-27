@@ -19,7 +19,9 @@ static_assert(std::is_base_of_v<
 int main() {
     neubau::modbus::ModbusDiscovery modbus{
         {.cidrs = {"127.0.0.1/32"}}};
-    neubau::sunspec::SunspecDiscovery sunspec;
+    neubau::sunspec::SunspecDiscovery sunspec{{
+        .modbus = {.cidrs = {"127.0.0.1/32"}},
+    }};
     modbus.stop();
     sunspec.stop();
 }

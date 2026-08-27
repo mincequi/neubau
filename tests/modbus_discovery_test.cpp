@@ -18,6 +18,9 @@ int main() {
     assert(
         (ModbusDiscovery::addressesInCidr("192.168.1.10")
          == std::vector<std::string>{"192.168.1.10"}));
+    assert(
+        ModbusDiscovery::cidrForAddress("192.168.1.42", 24)
+        == "192.168.1.0/24");
 
     bool rejectedLargeRange = false;
     try {

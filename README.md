@@ -64,7 +64,8 @@ server starts.
 
 `modbus/ModbusDiscovery.hpp` scans only explicitly configured IPv4 CIDRs and
 unit IDs. It uses bounded concurrency and read-only Modbus MEI `43/14`
-requests:
+requests, with a read-only holding-register probe for devices that do not
+implement Device Identification:
 
 ```cpp
 neubau::modbus::ModbusDiscovery discovery{{
@@ -78,6 +79,25 @@ discovery.discover().collect([](const neubau::modbus::ModbusThing& thing) {
 
 CIDR expansion is capped at 4096 hosts by default. Connection and response
 timeouts, concurrency, port, unit IDs, and the host cap are configurable.
+The application derives a `/24` from its primary IPv4 route and scans unit ID
+1 immediately at startup and once per minute afterward.
+
+## SunSpec discovery
+
+`sunspec/SunspecDiscovery.hpp` builds on Modbus discovery. It probes Modbus
+unit IDs `1`, `126`, and `128` by default, checks the standard SunSpec bases
+`40000`, `50000`, and `0` for the `SunS` marker, walks the model chain, and
+decodes identity fields from Common Model 1:
+
+```cpp
+neubau::sunspec::SunspecDiscoveryOptions options;
+options.modbus.cidrs = {"192.168.1.0/24"};
+neubau::sunspec::SunspecDiscovery discovery{std::move(options)};
+discovery.discover().collect(
+    [](const neubau::sunspec::SunspecThing& thing) {
+        use(thing.manufacturer, thing.model, thing.modelIds);
+    });
+```
 
 ## Build
 

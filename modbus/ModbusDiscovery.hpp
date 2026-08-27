@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,18 @@ struct ModbusThing {
 
 using ModbusThingFlow = common::Flow<rpp::dynamic_observable<ModbusThing>>;
 
+std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing);
+
+[[nodiscard]] std::optional<std::vector<std::uint16_t>>
+readHoldingRegisters(
+    const ModbusThing& thing,
+    std::uint16_t startAddress,
+    std::uint16_t registerCount,
+    std::chrono::milliseconds connectTimeout =
+        std::chrono::milliseconds{250},
+    std::chrono::milliseconds responseTimeout =
+        std::chrono::milliseconds{500});
+
 class ModbusDiscovery : public common::ThingDiscovery {
 public:
     explicit ModbusDiscovery(ModbusDiscoveryOptions options);
@@ -58,6 +71,11 @@ public:
     [[nodiscard]] static std::vector<std::string> addressesInCidr(
         const std::string& cidr,
         std::size_t maxHosts = 4096);
+    [[nodiscard]] static std::string cidrForAddress(
+        const std::string& address,
+        std::uint8_t prefix);
+    [[nodiscard]] static std::optional<std::string> primaryIpv4Cidr(
+        std::uint8_t prefix = 24);
 
 private:
     struct State;
