@@ -45,7 +45,9 @@ include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
 include(CTest)
 
 add_subdirectory(common)
+add_subdirectory(modbus)
 add_subdirectory(shelly)
+add_subdirectory(sunspec)
 add_subdirectory(webapp)
 add_subdirectory(src)
 
