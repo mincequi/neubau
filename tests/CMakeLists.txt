@@ -28,3 +28,8 @@ add_executable(modbus_discovery_test modbus_discovery_test.cpp)
 target_link_libraries(modbus_discovery_test PRIVATE neubau::modbus)
 
 add_test(NAME modbus_discovery_test COMMAND modbus_discovery_test)
+
+add_executable(sunspec_discovery_test sunspec_discovery_test.cpp)
+target_link_libraries(sunspec_discovery_test PRIVATE neubau::sunspec)
+
+add_test(NAME sunspec_discovery_test COMMAND sunspec_discovery_test)
