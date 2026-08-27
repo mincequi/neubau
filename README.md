@@ -8,8 +8,10 @@ ReactivePlusPlus for reactive programming.
 
 - `cmake/` - CMake helper modules
 - `common/` - shared application utilities, including the Kotlin Flow-style API
+- `modbus/` - Modbus device discovery
 - `shelly/` - Shelly device discovery and representation
 - `src/` - application sources
+- `sunspec/` - SunSpec device discovery
 - `webapp/` - web server code and placeholder for the future Flutter web app
 
 The content of `webapp/` will become a Flutter application. For now,
@@ -57,6 +59,25 @@ At startup, the application searches `_shelly._tcp` and `_http._tcp` in
 parallel. Shelly-specific advertisements are merged by device ID and printed
 with their endpoint, model, generation, and firmware version before the web
 server starts.
+
+## Modbus TCP discovery
+
+`modbus/ModbusDiscovery.hpp` scans only explicitly configured IPv4 CIDRs and
+unit IDs. It uses bounded concurrency and read-only Modbus MEI `43/14`
+requests:
+
+```cpp
+neubau::modbus::ModbusDiscovery discovery{{
+    .cidrs = {"192.168.1.0/24"},
+    .unitIds = {1, 2, 3},
+}};
+discovery.discover().collect([](const neubau::modbus::ModbusThing& thing) {
+    use(thing.address, thing.unitId, thing.vendorName);
+});
+```
+
+CIDR expansion is capped at 4096 hosts by default. Connection and response
+timeouts, concurrency, port, unit IDs, and the host cap are configurable.
 
 ## Build
 

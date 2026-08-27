@@ -12,3 +12,19 @@ add_executable(shelly_discovery_test shelly_discovery_test.cpp)
 target_link_libraries(shelly_discovery_test PRIVATE neubau::shelly)
 
 add_test(NAME shelly_discovery_test COMMAND shelly_discovery_test)
+
+add_executable(discovery_types_test discovery_types_test.cpp)
+target_link_libraries(
+    discovery_types_test
+    PRIVATE
+        neubau::modbus
+        neubau::shelly
+        neubau::sunspec
+)
+
+add_test(NAME discovery_types_test COMMAND discovery_types_test)
+
+add_executable(modbus_discovery_test modbus_discovery_test.cpp)
+target_link_libraries(modbus_discovery_test PRIVATE neubau::modbus)
+
+add_test(NAME modbus_discovery_test COMMAND modbus_discovery_test)
