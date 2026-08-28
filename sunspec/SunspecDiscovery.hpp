@@ -4,8 +4,6 @@
 #include "common/flow.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 
-#include <rpp/rpp.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -41,8 +39,6 @@ struct SunspecThing {
     bool operator==(const SunspecThing&) const = default;
 };
 
-using SunspecThingFlow = common::Flow<rpp::dynamic_observable<SunspecThing>>;
-
 std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing);
 
 class SunspecDiscovery : public common::ThingDiscovery {
@@ -52,10 +48,8 @@ public:
 
     SunspecDiscovery(const SunspecDiscovery&) = delete;
     SunspecDiscovery& operator=(const SunspecDiscovery&) = delete;
-    SunspecDiscovery(SunspecDiscovery&&) noexcept = default;
-    SunspecDiscovery& operator=(SunspecDiscovery&&) noexcept = default;
 
-    [[nodiscard]] SunspecThingFlow discover() const;
+    [[nodiscard]] common::Flow<SunspecThing> discover() const;
     void stop() noexcept override;
 
     [[nodiscard]] static bool isSunspecSignature(
@@ -64,8 +58,8 @@ public:
 private:
     struct State;
 
-    std::shared_ptr<State> state_;
-    SunspecDiscoveryOptions options_;
+    std::shared_ptr<State> _state;
+    SunspecDiscoveryOptions _options;
 };
 
 } // namespace neubau::sunspec

@@ -1,4 +1,5 @@
 #include "common/MdnsDiscovery.hpp"
+#include "common/Reactor.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -8,6 +9,7 @@
 #endif
 
 #include <mdns.h>
+#include <hv/hloop.h>
 
 #include <algorithm>
 #include <array>
@@ -18,16 +20,18 @@
 #include <exception>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string_view>
-#include <thread>
 #include <utility>
 
 namespace neubau::common {
 
 struct MdnsDiscovery::State {
-    std::atomic_bool stopRequested{false};
     std::atomic_bool running{false};
+    std::mutex mutex;
+    std::function<void()> stopAction;
 };
 
 namespace {
@@ -71,17 +75,6 @@ struct QueryContext {
             }
         }
     }
-};
-
-class SocketSet {
-public:
-    ~SocketSet() {
-        for (const auto socket : sockets) {
-            mdns_socket_close(socket);
-        }
-    }
-
-    std::vector<int> sockets;
 };
 
 std::string toString(mdns_string_t value) {
@@ -262,76 +255,99 @@ int handleRecord(
     return 0;
 }
 
-template<typename DiscoveryState>
-void runDiscovery(
-    const std::shared_ptr<DiscoveryState>& state,
-    const std::string& serviceType,
-    std::chrono::milliseconds timeout,
-    const EmitService& emit) {
-    if (state->running.exchange(true)) {
-        throw std::logic_error("mDNS discovery is already running");
-    }
-
-    struct RunningGuard {
-        std::shared_ptr<DiscoveryState> state;
-        ~RunningGuard() { state->running = false; }
-    } guard{state};
-
-    state->stopRequested = false;
-    SocketSet socketSet;
-
-    if (const auto socket = mdns_socket_open_ipv4(nullptr); socket >= 0) {
-        socketSet.sockets.push_back(socket);
-    }
-    if (const auto socket = mdns_socket_open_ipv6(nullptr); socket >= 0) {
-        socketSet.sockets.push_back(socket);
-    }
-    if (socketSet.sockets.empty()) {
-        throw std::runtime_error("failed to open an mDNS socket");
-    }
-
+struct MdnsSession : std::enable_shared_from_this<MdnsSession> {
+    QueryContext context;
+    std::chrono::milliseconds timeout;
+    std::function<void()> complete;
+    std::function<void(std::exception_ptr)> fail;
+    std::function<void()> stopped;
     alignas(std::uint32_t) std::array<std::byte, 4096> buffer{};
-    std::vector<std::pair<int, int>> queries;
-    for (const auto socket : socketSet.sockets) {
-        const auto queryId = mdns_query_send(
-            socket,
-            MDNS_RECORDTYPE_PTR,
-            serviceType.data(),
-            serviceType.size(),
-            buffer.data(),
-            buffer.size(),
-            0);
-        if (queryId >= 0) {
-            queries.emplace_back(socket, queryId);
-        }
-    }
-    if (queries.empty()) {
-        throw std::runtime_error("failed to send the mDNS query");
-    }
+    std::map<int, int> queryIds;
+    std::vector<hio_t*> ios;
+    hv::TimerID timerId{INVALID_TIMER_ID};
+    bool finished{};
 
-    QueryContext context{.serviceType = serviceType, .emit = emit};
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!state->stopRequested
-           && std::chrono::steady_clock::now() < deadline) {
-        for (const auto [socket, queryId] : queries) {
-            mdns_query_recv(
+    void start() {
+        for (const auto socket :
+             {mdns_socket_open_ipv4(nullptr),
+              mdns_socket_open_ipv6(nullptr)}) {
+            if (socket < 0) {
+                continue;
+            }
+            const auto queryId = mdns_query_send(
                 socket,
+                MDNS_RECORDTYPE_PTR,
+                context.serviceType.data(),
+                context.serviceType.size(),
                 buffer.data(),
                 buffer.size(),
-                handleRecord,
-                &context,
-                queryId);
+                0);
+            if (queryId < 0) {
+                mdns_socket_close(socket);
+                continue;
+            }
+
+            queryIds.emplace(socket, queryId);
+            auto* io = hio_get(Reactor::loop()->loop(), socket);
+            hio_set_context(io, this);
+            hio_add(io, onReadable, HV_READ);
+            ios.push_back(io);
         }
-        context.emitChanges();
-        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        if (ios.empty()) {
+            finish(std::make_exception_ptr(
+                std::runtime_error("failed to open an mDNS socket")));
+            return;
+        }
+
+        const auto self = shared_from_this();
+        timerId = Reactor::loop()->setTimeout(
+            static_cast<int>(timeout.count()),
+            [self](hv::TimerID) { self->finish(); });
     }
-}
+
+    static void onReadable(hio_t* io) {
+        auto& self = *static_cast<MdnsSession*>(hio_context(io));
+        const auto query = self.queryIds.find(hio_fd(io));
+        if (query == self.queryIds.end()) {
+            return;
+        }
+        mdns_query_recv(
+            hio_fd(io),
+            self.buffer.data(),
+            self.buffer.size(),
+            handleRecord,
+            &self.context,
+            query->second);
+        self.context.emitChanges();
+    }
+
+    void finish(std::exception_ptr error = {}) {
+        if (finished) {
+            return;
+        }
+        finished = true;
+        if (timerId != INVALID_TIMER_ID) {
+            Reactor::loop()->killTimer(timerId);
+        }
+        for (auto* io : ios) {
+            hio_del(io, HV_READ);
+            mdns_socket_close(hio_fd(io));
+        }
+        ios.clear();
+        stopped();
+        if (error) {
+            fail(error);
+        } else {
+            complete();
+        }
+    }
+};
 
 } // namespace
 
 MdnsDiscovery::MdnsDiscovery(std::chrono::milliseconds timeout)
-    : state_{std::make_shared<State>()}
-    , timeout_{timeout} {
+    : _state{std::make_shared<State>()}
+    , _timeout{timeout} {
     if (timeout < std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("mDNS discovery timeout cannot be negative");
     }
@@ -341,40 +357,74 @@ MdnsDiscovery::~MdnsDiscovery() {
     stop();
 }
 
-MdnsServiceFlow MdnsDiscovery::discover(std::string serviceType) const {
-    if (!state_) {
+Flow<MdnsService> MdnsDiscovery::discover(std::string serviceType) const {
+    if (!_state) {
         throw std::logic_error("mDNS discovery has been moved from");
     }
 
     const auto normalizedServiceType =
         normalizeServiceType(std::move(serviceType));
     auto observable = rpp::source::create<MdnsService>(
-        [state = state_, normalizedServiceType, timeout = timeout_](
+        [state = _state, normalizedServiceType, timeout = _timeout](
             auto&& observer) {
-            try {
-                runDiscovery(
-                    state,
-                    normalizedServiceType,
-                    timeout,
-                    [&observer](MdnsService service) {
-                        observer.on_next(std::move(service));
-                    });
-                observer.on_completed();
-            } catch (...) {
-                observer.on_error(std::current_exception());
+            if (state->running.exchange(true)) {
+                observer.on_error(std::make_exception_ptr(
+                    std::logic_error("mDNS discovery is already running")));
+                return;
             }
+
+            using Observer = std::decay_t<decltype(observer)>;
+            auto sharedObserver =
+                std::make_shared<Observer>(std::move(observer));
+            auto session = std::make_shared<MdnsSession>();
+            session->context = QueryContext{
+                .serviceType = normalizedServiceType,
+                .emit = [sharedObserver](MdnsService service) {
+                    sharedObserver->on_next(std::move(service));
+                },
+            };
+            session->timeout = timeout;
+            session->complete = [sharedObserver] {
+                sharedObserver->on_completed();
+            };
+            session->fail = [sharedObserver](std::exception_ptr error) {
+                sharedObserver->on_error(error);
+            };
+            session->stopped = [state] {
+                state->running = false;
+                std::scoped_lock lock{state->mutex};
+                state->stopAction = {};
+            };
+            {
+                std::scoped_lock lock{state->mutex};
+                state->stopAction = [weak = std::weak_ptr{session}] {
+                    if (const auto active = weak.lock()) {
+                        Reactor::loop()->queueInLoop(
+                            [active] { active->finish(); });
+                    }
+                };
+            }
+            Reactor::loop()->queueInLoop(
+                [session] { session->start(); });
         });
-    return MdnsServiceFlow{observable.as_dynamic()};
+    return Flow<MdnsService>{observable.as_dynamic()};
 }
 
 void MdnsDiscovery::stop() noexcept {
-    if (state_) {
-        state_->stopRequested = true;
+    if (_state) {
+        std::function<void()> stopAction;
+        {
+            std::scoped_lock lock{_state->mutex};
+            stopAction = _state->stopAction;
+        }
+        if (stopAction) {
+            stopAction();
+        }
     }
 }
 
 bool MdnsDiscovery::isRunning() const noexcept {
-    return state_ && state_->running;
+    return _state && _state->running;
 }
 
 std::string MdnsDiscovery::normalizeServiceType(std::string serviceType) {

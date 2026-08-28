@@ -18,11 +18,11 @@ public:
     [[nodiscard]] const common::MdnsService& service() const noexcept;
 
 private:
-    common::MdnsService service_;
-    std::string id_;
-    std::string model_;
-    std::string generation_;
-    std::string firmwareVersion_;
+    common::MdnsService _service;
+    std::string _id;
+    std::string _model;
+    std::string _generation;
+    std::string _firmwareVersion;
 };
 
 std::ostream& operator<<(std::ostream& stream, const ShellyThing& thing);

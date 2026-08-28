@@ -3,8 +3,6 @@
 #include "common/ThingDiscovery.hpp"
 #include "common/flow.hpp"
 
-#include <rpp/rpp.hpp>
-
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -41,11 +39,13 @@ struct ModbusThing {
     bool operator==(const ModbusThing&) const = default;
 };
 
-using ModbusThingFlow = common::Flow<rpp::dynamic_observable<ModbusThing>>;
-
 std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing);
 
-[[nodiscard]] std::optional<std::vector<std::uint16_t>>
+// Asynchronously reads `registerCount` holding registers over a libhv
+// TCP client attached to the shared reactor loop. Emits exactly one
+// vector on success followed by completion, or an error if the
+// connection, response, or protocol validation fails or times out.
+[[nodiscard]] common::Flow<std::vector<std::uint16_t>>
 readHoldingRegisters(
     const ModbusThing& thing,
     std::uint16_t startAddress,
@@ -62,10 +62,8 @@ public:
 
     ModbusDiscovery(const ModbusDiscovery&) = delete;
     ModbusDiscovery& operator=(const ModbusDiscovery&) = delete;
-    ModbusDiscovery(ModbusDiscovery&&) noexcept = default;
-    ModbusDiscovery& operator=(ModbusDiscovery&&) noexcept = default;
 
-    [[nodiscard]] ModbusThingFlow discover() const;
+    [[nodiscard]] common::Flow<ModbusThing> discover() const;
     void stop() noexcept override;
 
     [[nodiscard]] static std::vector<std::string> addressesInCidr(
@@ -80,9 +78,9 @@ public:
 private:
     struct State;
 
-    std::shared_ptr<State> state_;
-    ModbusDiscoveryOptions options_;
-    std::vector<std::string> addresses_;
+    std::shared_ptr<State> _state;
+    ModbusDiscoveryOptions _options;
+    std::vector<std::string> _addresses;
 };
 
 } // namespace neubau::modbus

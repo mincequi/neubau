@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <future>
 #include <vector>
 
 int main() {
@@ -28,7 +29,17 @@ int main() {
         },
     }};
     std::vector<neubau::sunspec::SunspecThing> found;
+    std::promise<void> completed;
+    auto completion = completed.get_future();
     discovery.discover().collect(
-        [&found](const auto& thing) { found.push_back(thing); });
+        [&found](const auto& thing) { found.push_back(thing); },
+        [&completed](std::exception_ptr error) {
+            completed.set_exception(error);
+        },
+        [&completed] { completed.set_value(); });
+    assert(
+        completion.wait_for(std::chrono::seconds{2})
+        == std::future_status::ready);
+    completion.get();
     assert(found.empty());
 }

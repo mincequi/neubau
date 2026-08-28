@@ -53,6 +53,25 @@ timeout. Call `stop()` from another thread to end an active discovery early.
 Responses include the service instance, endpoint, IPv4/IPv6 addresses, TXT
 metadata, and TTL.
 
+## Epoch-aligned timer
+
+`common/Timer.hpp` provides a cancellable flow of timer ticks
+aligned to Unix epoch boundaries. A 15-second timer emits at epoch seconds
+divisible by 15, regardless of when collection starts:
+
+```cpp
+neubau::common::Timer timer;
+timer.epochAlignedTicks(std::chrono::seconds{15})
+    .collect([](const auto& scheduledAt) {
+        pollDevices(scheduledAt);
+    });
+```
+
+Timers and network discovery share the libhv reactor exposed by
+`common/Reactor.hpp`. mDNS sockets and Modbus TCP clients register asynchronous
+I/O and timeout callbacks on that loop; no discovery class creates worker
+threads or performs blocking network waits.
+
 ## Shelly discovery
 
 At startup, the application searches `_shelly._tcp` and `_http._tcp` in

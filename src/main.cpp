@@ -1,103 +1,101 @@
+#include "common/Timer.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
 #include "webapp/WebAppService.hpp"
 
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <exception>
 #include <iostream>
-#include <mutex>
+#include <memory>
 #include <sstream>
 #include <string>
-#include <thread>
 
 namespace {
 
 void printShellyDevices() {
-    neubau::shelly::ShellyDiscovery discovery;
-    std::size_t count = 0;
-
     std::cout << "Discovering Shelly devices...\n" << std::flush;
-    try {
-        discovery.discover().collect(
-            [&count](const neubau::shelly::ShellyThing& thing) {
+    auto discovery =
+        std::make_shared<neubau::shelly::ShellyDiscovery>();
+    auto count = std::make_shared<std::size_t>(0);
+    static_cast<void>(discovery->discover().collect(
+            [count](const neubau::shelly::ShellyThing& thing) {
                 std::cout << thing;
-                ++count;
-            });
-    } catch (const std::exception& error) {
-        std::cerr << "Shelly discovery failed: " << error.what() << '\n';
-        return;
-    }
-
-    std::cout << "Discovered " << count << " Shelly device"
-              << (count == 1 ? "" : "s") << ".\n"
-              << std::flush;
+                ++*count;
+            },
+            [discovery](std::exception_ptr error) {
+                try {
+                    std::rethrow_exception(error);
+                } catch (const std::exception& exception) {
+                    std::cerr << "Shelly discovery failed: "
+                              << exception.what() << '\n';
+                }
+            },
+            [discovery, count] {
+                std::cout << "Discovered " << *count << " Shelly device"
+                          << (*count == 1 ? "" : "s") << ".\n"
+                          << std::flush;
+            }));
 }
 
 class PeriodicModbusDiscovery {
 public:
     explicit PeriodicModbusDiscovery(std::string cidr)
-        : worker_{[this, cidr = std::move(cidr)] {
-            run(std::move(cidr));
-        }} {}
+        : _cidr{std::move(cidr)} {
+        scan();
+        static_cast<void>(
+            _timer.epochAlignedTicks(std::chrono::minutes{1})
+                .collect([this](const auto&) { scan(); }));
+    }
 
     ~PeriodicModbusDiscovery() {
-        stopping_ = true;
-        wakeup_.notify_all();
-        if (worker_.joinable()) {
-            worker_.join();
+        _timer.stop();
+        if (_active) {
+            _active->stop();
         }
     }
-
-    PeriodicModbusDiscovery(const PeriodicModbusDiscovery&) = delete;
-    PeriodicModbusDiscovery& operator=(const PeriodicModbusDiscovery&) =
-        delete;
 
 private:
-    void run(std::string cidr) {
-        while (!stopping_) {
-            scan(cidr);
-
-            std::unique_lock lock{wakeupMutex_};
-            wakeup_.wait_for(
-                lock,
-                std::chrono::minutes{1},
-                [this] { return stopping_.load(); });
+    void scan() {
+        if (_active) {
+            return;
         }
-    }
-
-    void scan(const std::string& cidr) {
-        neubau::modbus::ModbusDiscovery discovery{{
-            .cidrs = {cidr},
+        _active = std::make_shared<neubau::modbus::ModbusDiscovery>(
+            neubau::modbus::ModbusDiscoveryOptions{
+            .cidrs = {_cidr},
             .unitIds = {1},
             .connectTimeout = std::chrono::milliseconds{150},
             .responseTimeout = std::chrono::milliseconds{300},
             .maxConcurrency = 32,
-        }};
+        });
 
-        std::ostringstream output;
-        std::size_t count = 0;
-        try {
-            discovery.discover().collect(
-                [&output, &count](const neubau::modbus::ModbusThing& thing) {
-                    output << thing;
-                    ++count;
-                });
-        } catch (const std::exception& error) {
-            std::cerr << "Modbus discovery failed: " << error.what() << '\n';
-            return;
-        }
-
-        output << "Modbus scan of " << cidr << " found " << count
-               << " device" << (count == 1 ? "" : "s") << ".\n";
-        std::cout << output.str() << std::flush;
+        auto output = std::make_shared<std::ostringstream>();
+        auto count = std::make_shared<std::size_t>(0);
+        static_cast<void>(_active->discover().collect(
+            [output, count](const neubau::modbus::ModbusThing& thing) {
+                *output << thing;
+                ++*count;
+            },
+            [this](std::exception_ptr error) {
+                try {
+                    std::rethrow_exception(error);
+                } catch (const std::exception& exception) {
+                    std::cerr << "Modbus discovery failed: "
+                              << exception.what() << '\n';
+                }
+                _active.reset();
+            },
+            [this, output, count] {
+                *output << "Modbus scan of " << _cidr << " found "
+                        << *count << " device"
+                        << (*count == 1 ? "" : "s") << ".\n";
+                std::cout << output->str() << std::flush;
+                _active.reset();
+            }));
     }
 
-    std::atomic_bool stopping_{false};
-    std::mutex wakeupMutex_;
-    std::condition_variable wakeup_;
-    std::thread worker_;
+    std::string _cidr;
+    neubau::common::Timer _timer;
+    std::shared_ptr<neubau::modbus::ModbusDiscovery> _active;
 };
 
 } // namespace

@@ -3,9 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
-#include <future>
 #include <map>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -90,76 +88,67 @@ void mergeService(
 } // namespace
 
 ShellyDiscovery::ShellyDiscovery(std::chrono::milliseconds timeout)
-    : state_{std::make_shared<State>(timeout)} {}
+    : _state{std::make_shared<State>(timeout)} {}
 
 ShellyDiscovery::~ShellyDiscovery() {
     stop();
 }
 
-ShellyThingFlow ShellyDiscovery::discover() const {
-    if (!state_) {
+common::Flow<ShellyThing> ShellyDiscovery::discover() const {
+    if (!_state) {
         throw std::logic_error("Shelly discovery has been moved from");
     }
 
     auto observable = rpp::source::create<ShellyThing>(
-        [state = state_](auto&& observer) {
-            std::map<std::string, common::MdnsService> devices;
-            std::mutex devicesMutex;
-            std::exception_ptr error;
-
-            const auto collect = [&](const auto& discovery, std::string type) {
-                try {
+        [state = _state](auto&& observer) {
+            using Observer = std::decay_t<decltype(observer)>;
+            struct Collection {
+                std::shared_ptr<Observer> observer;
+                std::map<std::string, common::MdnsService> devices;
+                std::size_t completed{};
+            };
+            auto collection = std::make_shared<Collection>(Collection{
+                .observer = std::make_shared<Observer>(
+                    std::move(observer)),
+            });
+            const auto collect = [collection](
+                                     const auto& discovery,
+                                     std::string type) {
+                static_cast<void>(
                     discovery->discover(std::move(type)).collect(
-                        [&](const common::MdnsService& service) {
+                        [collection](const common::MdnsService& service) {
                             if (!ShellyDiscovery::isShellyService(service)) {
                                 return;
                             }
-
                             const auto key = lowercase(instanceId(service));
-                            std::scoped_lock lock{devicesMutex};
-                            mergeService(devices[key], service);
-                        });
-                } catch (...) {
-                    std::scoped_lock lock{devicesMutex};
-                    if (!error) {
-                        error = std::current_exception();
-                    }
-                }
+                            mergeService(collection->devices[key], service);
+                        },
+                        [collection](std::exception_ptr error) {
+                            collection->observer->on_error(error);
+                        },
+                        [collection] {
+                            if (++collection->completed != 2) {
+                                return;
+                            }
+                            for (auto& [id, service] :
+                                 collection->devices) {
+                                static_cast<void>(id);
+                                collection->observer->on_next(
+                                    ShellyThing{std::move(service)});
+                            }
+                            collection->observer->on_completed();
+                        }));
             };
-
-            {
-                auto shellyQuery = std::async(
-                    std::launch::async,
-                    collect,
-                    state->shelly,
-                    std::string{shellyServiceType});
-                auto httpQuery = std::async(
-                    std::launch::async,
-                    collect,
-                    state->http,
-                    std::string{httpServiceType});
-                shellyQuery.get();
-                httpQuery.get();
-            }
-
-            if (error) {
-                observer.on_error(error);
-                return;
-            }
-
-            for (auto& [id, service] : devices) {
-                static_cast<void>(id);
-                observer.on_next(ShellyThing{std::move(service)});
-            }
-            observer.on_completed();
+            collect(state->shelly, std::string{shellyServiceType});
+            collect(state->http, std::string{httpServiceType});
         });
-    return ShellyThingFlow{observable.as_dynamic()};
+    return common::Flow<ShellyThing>{observable.as_dynamic()};
 }
 
 void ShellyDiscovery::stop() noexcept {
-    if (state_) {
-        state_->shelly->stop();
-        state_->http->stop();
+    if (_state) {
+        _state->shelly->stop();
+        _state->http->stop();
     }
 }
 
