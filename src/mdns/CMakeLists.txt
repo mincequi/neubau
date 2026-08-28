@@ -4,7 +4,7 @@ add_library(neubau::mdns ALIAS neubau_mdns)
 target_include_directories(
     neubau_mdns
     PUBLIC
-        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/src"
 )
 target_link_libraries(
     neubau_mdns

@@ -8,7 +8,7 @@ add_library(neubau::shelly ALIAS neubau_shelly)
 target_include_directories(
     neubau_shelly
     PUBLIC
-        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/src"
 )
 target_link_libraries(
     neubau_shelly
