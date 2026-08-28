@@ -7,12 +7,9 @@
 #include <ws2tcpip.h>
 #else
 #include <netdb.h>
-#include <unistd.h>
 #endif
 
-#include <hv/Channel.h>
 #include <hv/UdpServer.h>
-#include <hv/hsocket.h>
 #include <mdns.h>
 
 #include <algorithm>
@@ -142,39 +139,10 @@ std::vector<std::uint8_t> ptrQuery(std::string_view serviceType) {
             serviceType.begin() + static_cast<std::ptrdiff_t>(end));
         begin = end + 1;
     }
-    result.insert(result.end(), {0, 0, MDNS_RECORDTYPE_PTR, 0, MDNS_CLASS_IN});
+    result.insert(
+        result.end(),
+        {0, 0, MDNS_RECORDTYPE_PTR, 0x80, MDNS_CLASS_IN});
     return result;
-}
-
-void closeSocket(int socket) {
-#ifdef _WIN32
-    ::closesocket(socket);
-#else
-    ::close(socket);
-#endif
-}
-
-int createReusableSocket() {
-    const auto socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socket < 0) {
-        return -1;
-    }
-    if (so_reuseaddr(socket, 1) != 0
-#ifdef SO_REUSEPORT
-        || so_reuseport(socket, 1) != 0
-#endif
-    ) {
-        closeSocket(socket);
-        return -1;
-    }
-
-    sockaddr_u local{};
-    if (sockaddr_set_ipport(&local, "0.0.0.0", multicastPort) != 0
-        || ::bind(socket, &local.sa, SOCKADDR_LEN(&local.sa)) != 0) {
-        closeSocket(socket);
-        return -1;
-    }
-    return socket;
 }
 
 } // namespace
@@ -194,7 +162,7 @@ struct MdnsDiscovery::State :
         auto self = shared_from_this();
         common::Reactor::loop()->queueInLoop([self] {
             self->_server->host = "0.0.0.0";
-            self->_server->port = multicastPort;
+            self->_server->port = 0;
             self->_server->onMessage =
                 [weak = std::weak_ptr{self}](
                     const hv::SocketChannelPtr& channel,
@@ -203,32 +171,10 @@ struct MdnsDiscovery::State :
                         state->handleDatagram(channel, buffer);
                     }
                 };
-            const auto socket = createReusableSocket();
-            if (socket < 0) {
+            if (self->_server->createsocket(0, "0.0.0.0") < 0) {
                 self->_observer.on_error(std::make_exception_ptr(
                     std::runtime_error(
                         "failed to bind the mDNS UDP server")));
-                return;
-            }
-            self->_server->channel =
-                std::make_shared<hv::SocketChannel>(
-                    hio_get(common::Reactor::loop()->loop(), socket));
-
-            ip_mreq membership{};
-            membership.imr_multiaddr.s_addr =
-                inet_addr(multicastAddress.data());
-            membership.imr_interface.s_addr = htonl(INADDR_ANY);
-            if (setsockopt(
-                    self->_server->channel->fd(),
-                    IPPROTO_IP,
-                    IP_ADD_MEMBERSHIP,
-                    reinterpret_cast<const char*>(&membership),
-                    sizeof(membership))
-                != 0) {
-                self->_observer.on_error(std::make_exception_ptr(
-                    std::runtime_error(
-                        "failed to join the mDNS multicast group")));
-                self->_server->closesocket();
                 return;
             }
             self->_server->start();
