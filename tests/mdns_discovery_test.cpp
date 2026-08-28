@@ -1,12 +1,14 @@
-#include "common/MdnsDiscovery.hpp"
+#include "mdns/MdnsDiscovery.hpp"
 
+#include <atomic>
 #include <cassert>
-#include <chrono>
+#include <concepts>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 int main() {
-    using neubau::common::MdnsDiscovery;
+    using neubau::mdns::MdnsDiscovery;
 
     assert(
         MdnsDiscovery::normalizeServiceType("_http._tcp")
@@ -26,17 +28,17 @@ int main() {
     }
     assert(rejectedEmptyType);
 
-    bool rejectedNegativeTimeout = false;
-    try {
-        MdnsDiscovery discovery{std::chrono::milliseconds{-1}};
-    } catch (const std::invalid_argument&) {
-        rejectedNegativeTimeout = true;
-    }
-    assert(rejectedNegativeTimeout);
-
     MdnsDiscovery discovery;
-    assert(!discovery.isRunning());
-    const auto flow = discovery.discover("_http._tcp");
-    static_cast<void>(flow);
+    static_assert(std::same_as<
+                  std::remove_cvref_t<decltype(discovery.services())>,
+                  neubau::common::Flow<neubau::mdns::MdnsService>>);
+    std::atomic_bool completed{};
+    const auto subscription = discovery.services().subscribe(
+        [](const auto&) {},
+        [](std::exception_ptr) {},
+        [&completed] { completed = true; });
+    discovery.discover("_http._tcp");
     discovery.stop();
+    assert(completed);
+    static_cast<void>(subscription);
 }

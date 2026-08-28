@@ -2,14 +2,15 @@
 
 #include "common/flow.hpp"
 
-#include <chrono>
+#include <rpp/subjects/publish_subject.hpp>
+
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace neubau::common {
+namespace neubau::mdns {
 
 struct MdnsService {
     std::string serviceType;
@@ -27,16 +28,15 @@ struct MdnsService {
 
 class MdnsDiscovery {
 public:
-    explicit MdnsDiscovery(
-        std::chrono::milliseconds timeout = std::chrono::seconds{3});
+    MdnsDiscovery();
     ~MdnsDiscovery();
 
     MdnsDiscovery(const MdnsDiscovery&) = delete;
     MdnsDiscovery& operator=(const MdnsDiscovery&) = delete;
 
-    [[nodiscard]] Flow<MdnsService> discover(std::string serviceType) const;
+    [[nodiscard]] const common::Flow<MdnsService>& services() const noexcept;
+    void discover(std::string serviceType);
     void stop() noexcept;
-    [[nodiscard]] bool isRunning() const noexcept;
 
     [[nodiscard]] static std::string normalizeServiceType(
         std::string serviceType);
@@ -44,8 +44,9 @@ public:
 private:
     struct State;
 
+    rpp::subjects::publish_subject<MdnsService> _subject;
+    common::Flow<MdnsService> _services;
     std::shared_ptr<State> _state;
-    std::chrono::milliseconds _timeout;
 };
 
-} // namespace neubau::common
+} // namespace neubau::mdns

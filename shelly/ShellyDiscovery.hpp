@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common/MdnsDiscovery.hpp"
 #include "common/ThingDiscovery.hpp"
 #include "common/flow.hpp"
+#include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyThing.hpp"
 
 #include <chrono>
@@ -23,7 +23,7 @@ public:
     void stop() noexcept override;
 
     [[nodiscard]] static bool isShellyService(
-        const common::MdnsService& service);
+        const mdns::MdnsService& service);
 
 private:
     struct State;

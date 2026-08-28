@@ -37,21 +37,22 @@ starts a new subscription, matching Kotlin Flow's cold-stream behavior.
 
 ## mDNS discovery
 
-`common/MdnsDiscovery.hpp` provides generic DNS-SD discovery for any mDNS
+`mdns/MdnsDiscovery.hpp` provides generic DNS-SD discovery for any mDNS
 service type:
 
 ```cpp
-neubau::common::MdnsDiscovery discovery;
-discovery.discover("_http._tcp")
-    .collect([](const neubau::common::MdnsService& service) {
+neubau::mdns::MdnsDiscovery discovery;
+discovery.services()
+    .collect([](const neubau::mdns::MdnsService& service) {
         use(service.hostname, service.port, service.txt);
     });
+discovery.discover("_http._tcp");
 ```
 
-Collecting starts a one-shot discovery and completes after the configured
-timeout. Call `stop()` from another thread to end an active discovery early.
-Responses include the service instance, endpoint, IPv4/IPv6 addresses, TXT
-metadata, and TTL.
+The member flow is hot and can be shared by external subscribers. Calling
+`discover()` sends a PTR query through a libhv UDP server bound to the mDNS
+multicast group. Responses include the service instance, endpoint, IPv4/IPv6
+addresses, TXT metadata, and TTL.
 
 ## Epoch-aligned timer
 

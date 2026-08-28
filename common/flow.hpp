@@ -50,6 +50,17 @@ public:
             std::move(completion));
     }
 
+    template<typename Collector, typename ErrorHandler, typename Completion>
+    [[nodiscard]] auto subscribe(
+        Collector collector,
+        ErrorHandler errorHandler,
+        Completion completion) const {
+        return _observable.subscribe_with_disposable(
+            std::move(collector),
+            std::move(errorHandler),
+            std::move(completion));
+    }
+
 private:
     rpp::dynamic_observable<T> _observable;
 };
