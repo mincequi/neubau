@@ -2,6 +2,7 @@
 
 #include "common/flow.hpp"
 
+#include <hv/UdpServer.h>
 #include <rpp/subjects/publish_subject.hpp>
 
 #include <cstdint>
@@ -42,11 +43,33 @@ public:
         std::string serviceType);
 
 private:
-    struct State;
+    struct PendingService {
+        MdnsService service;
+        bool hasPtr{};
+        bool hasSrv{};
+    };
+
+    void sendQuery(const std::string& serviceType);
+    void handleDatagram(
+        const hv::SocketChannelPtr& channel,
+        hv::Buffer* buffer);
+    int handleRecord(
+        std::uint16_t recordType,
+        std::uint32_t ttl,
+        const void* data,
+        std::size_t size,
+        std::size_t nameOffset,
+        std::size_t recordOffset,
+        std::size_t recordLength);
+    void emitChanges();
 
     rpp::subjects::publish_subject<MdnsService> _subject;
     common::Flow<MdnsService> _services;
-    std::shared_ptr<State> _state;
+    hv::UdpServer _server;
+    std::map<std::string, PendingService> _discoveredServices;
+    std::map<std::string, std::vector<std::string>> _addresses;
+    std::map<std::string, MdnsService> _emitted;
+    bool _stopped{};
 };
 
 } // namespace neubau::mdns

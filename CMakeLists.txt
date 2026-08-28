@@ -33,6 +33,16 @@ CPMAddPackage(
 )
 
 CPMAddPackage(
+    NAME plog
+    GITHUB_REPOSITORY SergiusTheBest/plog
+    GIT_TAG 1.1.11
+    OPTIONS
+        "PLOG_BUILD_SAMPLES OFF"
+        "PLOG_BUILD_TESTS OFF"
+        "PLOG_INSTALL OFF"
+)
+
+CPMAddPackage(
     NAME mdns
     GITHUB_REPOSITORY mjansson/mdns
     GIT_TAG 1.4.3
@@ -52,12 +62,6 @@ include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
 
 include(CTest)
 
-add_subdirectory(common)
-add_subdirectory(mdns)
-add_subdirectory(modbus)
-add_subdirectory(shelly)
-add_subdirectory(sunspec)
-add_subdirectory(webapp)
 add_subdirectory(src)
 
 if(BUILD_TESTING)

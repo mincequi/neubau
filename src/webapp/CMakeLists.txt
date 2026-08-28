@@ -11,7 +11,7 @@ add_library(neubau::webapp ALIAS neubau_webapp)
 target_include_directories(
     neubau_webapp
     PUBLIC
-        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/src"
 )
 target_link_libraries(
     neubau_webapp

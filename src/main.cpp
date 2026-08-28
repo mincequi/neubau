@@ -1,118 +1,106 @@
-#include "common/Timer.hpp"
-#include "modbus/ModbusDiscovery.hpp"
+#include <plog/Appenders/ColorConsoleAppender.h>
+#include <plog/Formatters/TxtFormatter.h>
+#include <plog/Init.h>
+#include <plog/Log.h>
+
+#include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
 #include "webapp/WebAppService.hpp"
 
-#include <chrono>
+#include <algorithm>
+#include <cctype>
 #include <exception>
-#include <iostream>
-#include <memory>
-#include <sstream>
 #include <string>
+#include <string_view>
 
 namespace {
 
-void printShellyDevices() {
-    std::cout << "Discovering Shelly devices...\n" << std::flush;
-    auto discovery =
-        std::make_shared<neubau::shelly::ShellyDiscovery>();
-    auto count = std::make_shared<std::size_t>(0);
-    static_cast<void>(discovery->discover().collect(
-            [count](const neubau::shelly::ShellyThing& thing) {
-                std::cout << thing;
-                ++*count;
-            },
-            [discovery](std::exception_ptr error) {
-                try {
-                    std::rethrow_exception(error);
-                } catch (const std::exception& exception) {
-                    std::cerr << "Shelly discovery failed: "
-                              << exception.what() << '\n';
-                }
-            },
-            [discovery, count] {
-                std::cout << "Discovered " << *count << " Shelly device"
-                          << (*count == 1 ? "" : "s") << ".\n"
-                          << std::flush;
-            }));
+constexpr std::string_view httpServiceType{"_http._tcp.local."};
+
+std::string lowercase(std::string_view value) {
+    std::string result{value};
+    std::transform(
+        result.begin(),
+        result.end(),
+        result.begin(),
+        [](char character) {
+            return static_cast<char>(
+                std::tolower(static_cast<unsigned char>(character)));
+        });
+    return result;
 }
 
-class PeriodicModbusDiscovery {
-public:
-    explicit PeriodicModbusDiscovery(std::string cidr)
-        : _cidr{std::move(cidr)} {
-        scan();
-        static_cast<void>(
-            _timer.epochAlignedTicks(std::chrono::minutes{1})
-                .collect([this](const auto&) { scan(); }));
-    }
-
-    ~PeriodicModbusDiscovery() {
-        _timer.stop();
-        if (_active) {
-            _active->stop();
+std::string txtValue(
+    const neubau::mdns::MdnsService& service,
+    std::string_view key) {
+    const auto normalizedKey = lowercase(key);
+    for (const auto& [candidate, value] : service.txt) {
+        if (lowercase(candidate) == normalizedKey) {
+            return value;
         }
     }
+    return {};
+}
 
-private:
-    void scan() {
-        if (_active) {
-            return;
-        }
-        _active = std::make_shared<neubau::modbus::ModbusDiscovery>(
-            neubau::modbus::ModbusDiscoveryOptions{
-            .cidrs = {_cidr},
-            .unitIds = {1},
-            .connectTimeout = std::chrono::milliseconds{150},
-            .responseTimeout = std::chrono::milliseconds{300},
-            .maxConcurrency = 32,
-        });
-
-        auto output = std::make_shared<std::ostringstream>();
-        auto count = std::make_shared<std::size_t>(0);
-        static_cast<void>(_active->discover().collect(
-            [output, count](const neubau::modbus::ModbusThing& thing) {
-                *output << thing;
-                ++*count;
-            },
-            [this](std::exception_ptr error) {
-                try {
-                    std::rethrow_exception(error);
-                } catch (const std::exception& exception) {
-                    std::cerr << "Modbus discovery failed: "
-                              << exception.what() << '\n';
-                }
-                _active.reset();
-            },
-            [this, output, count] {
-                *output << "Modbus scan of " << _cidr << " found "
-                        << *count << " device"
-                        << (*count == 1 ? "" : "s") << ".\n";
-                std::cout << output->str() << std::flush;
-                _active.reset();
-            }));
+bool isGoECharger(const neubau::mdns::MdnsService& service) {
+    if (lowercase(service.serviceType) != httpServiceType) {
+        return false;
     }
 
-    std::string _cidr;
-    neubau::common::Timer _timer;
-    std::shared_ptr<neubau::modbus::ModbusDiscovery> _active;
-};
+    const auto manufacturer = lowercase(txtValue(service, "manufacturer"));
+    const auto deviceFamily = lowercase(txtValue(service, "devicefamily"));
+    if (manufacturer == "go-e" && deviceFamily == "goecharger") {
+        return true;
+    }
+
+    return lowercase(service.instanceName).starts_with("go-echarger")
+        || lowercase(service.hostname).starts_with("go-echarger");
+}
+
+std::string endpoint(const neubau::mdns::MdnsService& service) {
+    const auto& host = service.addresses.empty()
+        ? service.hostname
+        : service.addresses.front();
+    return host + ':' + std::to_string(service.port);
+}
+
+void logService(const neubau::mdns::MdnsService& service) {
+    if (neubau::shelly::ShellyDiscovery::isShellyService(service)) {
+        PLOGI << "Shelly discovered: " << service.instanceName
+              << " at " << endpoint(service);
+        return;
+    }
+    if (isGoECharger(service)) {
+        PLOGI << "go-eCharger discovered: "
+              << txtValue(service, "serial")
+              << " (" << txtValue(service, "devicetype") << ") at "
+              << endpoint(service);
+    }
+}
 
 } // namespace
 
 int main(int argc, char** argv) {
-    printShellyDevices();
+    static plog::ColorConsoleAppender<plog::TxtFormatter> console;
+    plog::init(plog::info, &console);
 
-    const auto modbusCidr =
-        neubau::modbus::ModbusDiscovery::primaryIpv4Cidr(24);
-    if (!modbusCidr) {
-        std::cerr << "Modbus discovery disabled: no primary IPv4 route.\n";
-        return neubau::webapp::run_server(argc, argv);
-    }
+    neubau::mdns::MdnsDiscovery discovery;
+    auto subscription = discovery.services().subscribe(
+        logService,
+        [](std::exception_ptr error) {
+            try {
+                std::rethrow_exception(error);
+            } catch (const std::exception& exception) {
+                PLOGE << "Service discovery failed: " << exception.what();
+            }
+        },
+        [] { PLOGI << "Service discovery stopped"; });
 
-    std::cout << "Scanning " << *modbusCidr
-              << " for Modbus TCP devices every minute.\n"
-              << std::flush;
-    PeriodicModbusDiscovery modbusDiscovery{*modbusCidr};
-    return neubau::webapp::run_server(argc, argv);
+    discovery.discover("_shelly._tcp");
+    discovery.discover("_http._tcp");
+
+    const auto result = neubau::webapp::run_server(argc, argv);
+    subscription.dispose();
+    discovery.stop();
+    return result;
 }
