@@ -9,7 +9,7 @@ target_link_libraries(timer_test PRIVATE neubau::common)
 add_test(NAME timer_test COMMAND timer_test)
 
 add_executable(mdns_discovery_test mdns_discovery_test.cpp)
-target_link_libraries(mdns_discovery_test PRIVATE neubau::common)
+target_link_libraries(mdns_discovery_test PRIVATE neubau::mdns)
 
 add_test(NAME mdns_discovery_test COMMAND mdns_discovery_test)
 

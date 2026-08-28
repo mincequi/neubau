@@ -7,7 +7,7 @@
 #include <vector>
 
 int main() {
-    neubau::common::MdnsService service{
+    neubau::mdns::MdnsService service{
         .serviceType = "_shelly._tcp.local.",
         .instanceName = "shellyplus1pm-aabbcc._shelly._tcp.local.",
         .hostname = "shellyplus1pm-aabbcc.local.",

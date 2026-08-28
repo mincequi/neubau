@@ -7,7 +7,7 @@ namespace neubau::shelly {
 namespace {
 
 std::string txtValue(
-    const common::MdnsService& service,
+    const mdns::MdnsService& service,
     const std::string& key) {
     const auto value = service.txt.find(key);
     return value == service.txt.end() ? std::string{} : value->second;
@@ -20,7 +20,7 @@ std::string instanceId(const std::string& instanceName) {
 
 } // namespace
 
-ShellyThing::ShellyThing(common::MdnsService service)
+ShellyThing::ShellyThing(mdns::MdnsService service)
     : _service{std::move(service)}
     , _id{txtValue(_service, "id")}
     , _model{txtValue(_service, "app")}
@@ -47,7 +47,7 @@ const std::string& ShellyThing::firmwareVersion() const noexcept {
     return _firmwareVersion;
 }
 
-const common::MdnsService& ShellyThing::service() const noexcept {
+const mdns::MdnsService& ShellyThing::service() const noexcept {
     return _service;
 }
 

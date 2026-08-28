@@ -2,7 +2,6 @@ add_library(
     neubau_common
     Reactor.cpp
     Timer.cpp
-    MdnsDiscovery.cpp
 )
 add_library(neubau::common ALIAS neubau_common)
 
@@ -16,7 +15,5 @@ target_link_libraries(
     PUBLIC
         ${NEUBAU_LIBHV_TARGET}
         RPP::rpp
-    PRIVATE
-        mdns::mdns
 )
 target_compile_features(neubau_common PUBLIC cxx_std_20)
