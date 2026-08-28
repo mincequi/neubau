@@ -1,7 +1,9 @@
 #include "common/flow.hpp"
 
 #include <cassert>
+#include <concepts>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 int main() {
@@ -17,6 +19,9 @@ int main() {
                           .onEach([&side_effects](const std::string&) {
                               ++side_effects;
                           });
+    static_assert(std::same_as<
+                  std::remove_cv_t<decltype(flow)>,
+                  neubau::common::Flow<std::string>>);
 
     flow.collect([&collected](const std::string& value) {
         collected.push_back(value);

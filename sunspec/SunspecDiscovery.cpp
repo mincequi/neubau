@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
+#include <functional>
 #include <limits>
-#include <optional>
+#include <memory>
 #include <ostream>
 #include <set>
 #include <stdexcept>
@@ -51,125 +54,235 @@ std::string decodeString(
     return result;
 }
 
-std::optional<std::vector<std::uint16_t>> readRegisters(
-    const modbus::ModbusThing& thing,
-    std::uint16_t startAddress,
-    std::size_t registerCount,
-    const modbus::ModbusDiscoveryOptions& options,
-    const std::atomic_bool& stopRequested) {
-    std::vector<std::uint16_t> result;
-    result.reserve(registerCount);
+using Registers = std::vector<std::uint16_t>;
+using ReadSuccess = std::function<void(Registers)>;
+using ReadFailure = std::function<void()>;
 
-    std::size_t offset = 0;
-    while (offset < registerCount) {
-        if (stopRequested.load()) {
-            return std::nullopt;
-        }
-        const auto chunkSize = std::min<std::size_t>(
-            125, registerCount - offset);
-        const auto address =
-            static_cast<std::uint32_t>(startAddress) + offset;
-        if (address > std::numeric_limits<std::uint16_t>::max()) {
-            return std::nullopt;
-        }
-
-        auto chunk = modbus::readHoldingRegisters(
-            thing,
-            static_cast<std::uint16_t>(address),
-            static_cast<std::uint16_t>(chunkSize),
-            options.connectTimeout,
-            options.responseTimeout);
-        if (!chunk) {
-            return std::nullopt;
-        }
-        result.insert(result.end(), chunk->begin(), chunk->end());
-        offset += chunkSize;
+class RegisterReader : public std::enable_shared_from_this<RegisterReader> {
+public:
+    RegisterReader(
+        modbus::ModbusThing thing,
+        modbus::ModbusDiscoveryOptions options,
+        std::uint16_t startAddress,
+        std::size_t registerCount,
+        const std::atomic_bool& stopRequested,
+        ReadSuccess success,
+        ReadFailure failure)
+        : _thing{std::move(thing)}
+        , _options{std::move(options)}
+        , _nextAddress{startAddress}
+        , _remaining{registerCount}
+        , _stopRequested{stopRequested}
+        , _success{std::move(success)}
+        , _failure{std::move(failure)} {
+        _registers.reserve(registerCount);
     }
-    return result;
-}
 
-std::optional<SunspecThing> probe(
-    const modbus::ModbusThing& modbusThing,
-    const SunspecDiscoveryOptions& options,
-    const std::atomic_bool& stopRequested) {
-    for (const auto baseAddress : options.baseAddresses) {
-        if (stopRequested.load()) {
-            return std::nullopt;
+    void start() { next(); }
+
+private:
+    void next() {
+        if (_stopRequested.load()) {
+            fail();
+            return;
         }
-        const auto signature =
-            readRegisters(
-                modbusThing,
-                baseAddress,
-                2,
-                options.modbus,
-                stopRequested);
-        if (!signature
-            || !SunspecDiscovery::isSunspecSignature(*signature)) {
-            continue;
+        if (_remaining == 0) {
+            auto success = std::move(_success);
+            _failure = nullptr;
+            if (success) {
+                success(std::move(_registers));
+            }
+            return;
         }
 
-        SunspecThing thing{
-            .modbus = modbusThing,
-            .baseAddress = baseAddress,
-        };
-        std::uint32_t cursor = static_cast<std::uint32_t>(baseAddress) + 2;
-        for (std::size_t modelIndex = 0;
-             modelIndex < options.maxModels;
-             ++modelIndex) {
-            if (cursor + 1
-                    > std::numeric_limits<std::uint16_t>::max()
-                || cursor - baseAddress > options.maxRegisterSpan) {
-                break;
-            }
+        const auto chunkSize =
+            std::min<std::size_t>(125, _remaining);
+        auto self = shared_from_this();
+        static_cast<void>(
+            modbus::readHoldingRegisters(
+                _thing,
+                _nextAddress,
+                static_cast<std::uint16_t>(chunkSize),
+                _options.connectTimeout,
+                _options.responseTimeout)
+                .collect(
+                    [self](Registers registers) {
+                        self->_registers.insert(
+                            self->_registers.end(),
+                            registers.begin(),
+                            registers.end());
+                        self->_nextAddress = static_cast<std::uint16_t>(
+                            self->_nextAddress + registers.size());
+                        self->_remaining -= registers.size();
+                    },
+                    [self](std::exception_ptr) { self->fail(); },
+                    [self] { self->next(); }));
+    }
 
-            const auto header = readRegisters(
-                modbusThing,
-                static_cast<std::uint16_t>(cursor),
-                2,
-                options.modbus,
-                stopRequested);
-            if (!header) {
-                break;
-            }
+    void fail() {
+        auto failure = std::move(_failure);
+        _success = nullptr;
+        if (failure) {
+            failure();
+        }
+    }
 
-            const auto modelId = (*header)[0];
-            const auto modelLength = (*header)[1];
-            if (modelId == endModelId) {
-                thing.completeModelChain = true;
-                break;
-            }
-            if (cursor + 2 + modelLength
-                    > std::numeric_limits<std::uint16_t>::max() + 1ULL
-                || cursor + 2 + modelLength - baseAddress
-                    > options.maxRegisterSpan) {
-                break;
-            }
+    modbus::ModbusThing _thing;
+    modbus::ModbusDiscoveryOptions _options;
+    std::uint16_t _nextAddress;
+    std::size_t _remaining;
+    const std::atomic_bool& _stopRequested;
+    ReadSuccess _success;
+    ReadFailure _failure;
+    Registers _registers;
+};
 
-            thing.modelIds.push_back(modelId);
-            if (modelId == commonModelId && modelLength >= 65) {
-                const auto common = readRegisters(
-                    modbusThing,
-                    static_cast<std::uint16_t>(cursor + 2),
-                    modelLength,
-                    options.modbus,
-                    stopRequested);
-                if (common) {
-                    thing.manufacturer = decodeString(*common, 0, 16);
-                    thing.model = decodeString(*common, 16, 16);
-                    thing.options = decodeString(*common, 32, 8);
-                    thing.version = decodeString(*common, 40, 8);
-                    thing.serialNumber = decodeString(*common, 48, 16);
+using ProbeResult = std::function<void(std::optional<SunspecThing>)>;
+
+class Probe : public std::enable_shared_from_this<Probe> {
+public:
+    Probe(
+        modbus::ModbusThing thing,
+        SunspecDiscoveryOptions options,
+        const std::atomic_bool& stopRequested,
+        ProbeResult result)
+        : _modbusThing{std::move(thing)}
+        , _options{std::move(options)}
+        , _stopRequested{stopRequested}
+        , _result{std::move(result)} {}
+
+    void start() { probeBase(); }
+
+private:
+    void read(
+        std::uint16_t address,
+        std::size_t count,
+        ReadSuccess success,
+        ReadFailure failure) {
+        auto reader = std::make_shared<RegisterReader>(
+            _modbusThing,
+            _options.modbus,
+            address,
+            count,
+            _stopRequested,
+            std::move(success),
+            std::move(failure));
+        reader->start();
+    }
+
+    void probeBase() {
+        if (_stopRequested.load()
+            || _baseIndex >= _options.baseAddresses.size()) {
+            complete(std::nullopt);
+            return;
+        }
+        const auto baseAddress = _options.baseAddresses[_baseIndex];
+        auto self = shared_from_this();
+        read(
+            baseAddress,
+            2,
+            [self, baseAddress](Registers signature) {
+                if (!SunspecDiscovery::isSunspecSignature(signature)) {
+                    ++self->_baseIndex;
+                    self->probeBase();
+                    return;
                 }
-            }
-            cursor += 2 + modelLength;
-        }
-        if (stopRequested.load()) {
-            return std::nullopt;
-        }
-        return thing;
+                self->_thing = SunspecThing{
+                    .modbus = self->_modbusThing,
+                    .baseAddress = baseAddress,
+                };
+                self->_cursor =
+                    static_cast<std::uint32_t>(baseAddress) + 2;
+                self->readModelHeader();
+            },
+            [self] {
+                ++self->_baseIndex;
+                self->probeBase();
+            });
     }
-    return std::nullopt;
-}
+
+    void readModelHeader() {
+        if (_stopRequested.load()) {
+            complete(std::nullopt);
+            return;
+        }
+        if (_modelIndex >= _options.maxModels
+            || _cursor + 1
+                > std::numeric_limits<std::uint16_t>::max()
+            || _cursor - _thing.baseAddress
+                > _options.maxRegisterSpan) {
+            complete(_thing);
+            return;
+        }
+
+        auto self = shared_from_this();
+        read(
+            static_cast<std::uint16_t>(_cursor),
+            2,
+            [self](Registers header) { self->onModelHeader(header); },
+            [self] { self->complete(self->_thing); });
+    }
+
+    void onModelHeader(const Registers& header) {
+        const auto modelId = header[0];
+        const auto modelLength = header[1];
+        if (modelId == endModelId) {
+            _thing.completeModelChain = true;
+            complete(_thing);
+            return;
+        }
+        if (_cursor + 2 + modelLength
+                > std::numeric_limits<std::uint16_t>::max() + 1ULL
+            || _cursor + 2 + modelLength - _thing.baseAddress
+                > _options.maxRegisterSpan) {
+            complete(_thing);
+            return;
+        }
+
+        _thing.modelIds.push_back(modelId);
+        if (modelId == commonModelId && modelLength >= 65) {
+            auto self = shared_from_this();
+            read(
+                static_cast<std::uint16_t>(_cursor + 2),
+                modelLength,
+                [self, modelLength](Registers common) {
+                    self->_thing.manufacturer =
+                        decodeString(common, 0, 16);
+                    self->_thing.model = decodeString(common, 16, 16);
+                    self->_thing.options = decodeString(common, 32, 8);
+                    self->_thing.version = decodeString(common, 40, 8);
+                    self->_thing.serialNumber =
+                        decodeString(common, 48, 16);
+                    self->advance(modelLength);
+                },
+                [self, modelLength] { self->advance(modelLength); });
+            return;
+        }
+        advance(modelLength);
+    }
+
+    void advance(std::uint16_t modelLength) {
+        _cursor += 2 + modelLength;
+        ++_modelIndex;
+        readModelHeader();
+    }
+
+    void complete(std::optional<SunspecThing> thing) {
+        auto result = std::move(_result);
+        if (result) {
+            result(std::move(thing));
+        }
+    }
+
+    modbus::ModbusThing _modbusThing;
+    SunspecDiscoveryOptions _options;
+    const std::atomic_bool& _stopRequested;
+    ProbeResult _result;
+    SunspecThing _thing;
+    std::size_t _baseIndex{};
+    std::size_t _modelIndex{};
+    std::uint32_t _cursor{};
+};
 
 void validateOptions(const SunspecDiscoveryOptions& options) {
     if (options.baseAddresses.empty() || options.maxModels == 0
@@ -207,24 +320,32 @@ std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing) {
 }
 
 SunspecDiscovery::SunspecDiscovery(SunspecDiscoveryOptions options)
-    : state_{std::make_shared<State>(options.modbus)}
-    , options_{std::move(options)} {
-    validateOptions(options_);
+    : _state{std::make_shared<State>(options.modbus)}
+    , _options{std::move(options)} {
+    validateOptions(_options);
 }
 
 SunspecDiscovery::~SunspecDiscovery() {
     stop();
 }
 
-SunspecThingFlow SunspecDiscovery::discover() const {
-    if (!state_) {
-        throw std::logic_error("SunSpec discovery has been moved from");
-    }
-
+common::Flow<SunspecThing> SunspecDiscovery::discover() const {
     auto observable = rpp::source::create<SunspecThing>(
-        [state = state_, options = options_](auto&& observer) {
-            try {
-                state->stopRequested = false;
+        [state = _state, options = _options](auto&& observer) {
+            using Observer = std::decay_t<decltype(observer)>;
+            struct Collection
+                : std::enable_shared_from_this<Collection> {
+                Collection(
+                    std::shared_ptr<State> collectionState,
+                    SunspecDiscoveryOptions collectionOptions,
+                    std::shared_ptr<Observer> collectionObserver)
+                    : state{std::move(collectionState)}
+                    , options{std::move(collectionOptions)}
+                    , observer{std::move(collectionObserver)} {}
+
+                std::shared_ptr<State> state;
+                SunspecDiscoveryOptions options;
+                std::shared_ptr<Observer> observer;
                 std::set<std::tuple<
                     std::string,
                     std::uint16_t,
@@ -232,39 +353,84 @@ SunspecThingFlow SunspecDiscovery::discover() const {
                     std::string,
                     std::string>>
                     emitted;
-                state->modbus->discover().collect(
-                    [&](const modbus::ModbusThing& modbusThing) {
-                        if (auto thing = probe(
-                                modbusThing,
-                                options,
-                                state->stopRequested)) {
-                            auto identity = std::make_tuple(
-                                thing->modbus.address,
-                                thing->modbus.port,
-                                thing->manufacturer,
-                                thing->model,
-                                thing->serialNumber.empty()
-                                    ? std::to_string(
-                                          thing->modbus.unitId)
-                                    : thing->serialNumber);
-                            if (emitted.insert(std::move(identity)).second) {
-                                observer.on_next(std::move(*thing));
-                            }
+                std::size_t pending{};
+                bool sourceCompleted{};
+                bool finished{};
+
+                void start() {
+                    state->stopRequested = false;
+                    auto self = this->shared_from_this();
+                    static_cast<void>(state->modbus->discover().collect(
+                        [self](const modbus::ModbusThing& thing) {
+                            self->onModbus(thing);
+                        },
+                        [self](std::exception_ptr error) {
+                            self->finished = true;
+                            self->observer->on_error(error);
+                        },
+                        [self] {
+                            self->sourceCompleted = true;
+                            self->maybeComplete();
+                        }));
+                }
+
+                void onModbus(const modbus::ModbusThing& modbusThing) {
+                    if (finished || state->stopRequested.load()) {
+                        return;
+                    }
+                    ++pending;
+                    auto self = this->shared_from_this();
+                    auto probe = std::make_shared<Probe>(
+                        modbusThing,
+                        options,
+                        state->stopRequested,
+                        [self](std::optional<SunspecThing> thing) {
+                            self->onProbe(std::move(thing));
+                        });
+                    probe->start();
+                }
+
+                void onProbe(std::optional<SunspecThing> thing) {
+                    if (pending > 0) {
+                        --pending;
+                    }
+                    if (!finished && !state->stopRequested.load() && thing) {
+                        auto identity = std::make_tuple(
+                            thing->modbus.address,
+                            thing->modbus.port,
+                            thing->manufacturer,
+                            thing->model,
+                            thing->serialNumber.empty()
+                                ? std::to_string(thing->modbus.unitId)
+                                : thing->serialNumber);
+                        if (emitted.insert(std::move(identity)).second) {
+                            observer->on_next(std::move(*thing));
                         }
-                    });
-                observer.on_completed();
-            } catch (...) {
-                observer.on_error(std::current_exception());
-            }
+                    }
+                    maybeComplete();
+                }
+
+                void maybeComplete() {
+                    if (finished || !sourceCompleted || pending != 0) {
+                        return;
+                    }
+                    finished = true;
+                    observer->on_completed();
+                }
+            };
+
+            auto collection = std::make_shared<Collection>(
+                state,
+                options,
+                std::make_shared<Observer>(std::move(observer)));
+            collection->start();
         });
-    return SunspecThingFlow{observable.as_dynamic()};
+    return common::Flow<SunspecThing>{observable.as_dynamic()};
 }
 
 void SunspecDiscovery::stop() noexcept {
-    if (state_) {
-        state_->stopRequested = true;
-        state_->modbus->stop();
-    }
+    _state->stopRequested = true;
+    _state->modbus->stop();
 }
 
 bool SunspecDiscovery::isSunspecSignature(

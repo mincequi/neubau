@@ -2,8 +2,6 @@
 
 #include "common/flow.hpp"
 
-#include <rpp/rpp.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -27,8 +25,6 @@ struct MdnsService {
     bool operator==(const MdnsService&) const = default;
 };
 
-using MdnsServiceFlow = Flow<rpp::dynamic_observable<MdnsService>>;
-
 class MdnsDiscovery {
 public:
     explicit MdnsDiscovery(
@@ -37,10 +33,8 @@ public:
 
     MdnsDiscovery(const MdnsDiscovery&) = delete;
     MdnsDiscovery& operator=(const MdnsDiscovery&) = delete;
-    MdnsDiscovery(MdnsDiscovery&&) noexcept = default;
-    MdnsDiscovery& operator=(MdnsDiscovery&&) noexcept = default;
 
-    [[nodiscard]] MdnsServiceFlow discover(std::string serviceType) const;
+    [[nodiscard]] Flow<MdnsService> discover(std::string serviceType) const;
     void stop() noexcept;
     [[nodiscard]] bool isRunning() const noexcept;
 
@@ -50,8 +44,8 @@ public:
 private:
     struct State;
 
-    std::shared_ptr<State> state_;
-    std::chrono::milliseconds timeout_;
+    std::shared_ptr<State> _state;
+    std::chrono::milliseconds _timeout;
 };
 
 } // namespace neubau::common

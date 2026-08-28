@@ -40,6 +40,14 @@ CPMAddPackage(
         "MDNS_BUILD_EXAMPLE OFF"
 )
 
+if(TARGET hv)
+    set(NEUBAU_LIBHV_TARGET hv)
+elseif(TARGET hv_static)
+    set(NEUBAU_LIBHV_TARGET hv_static)
+else()
+    message(FATAL_ERROR "libhv target not available")
+endif()
+
 include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
 
 include(CTest)

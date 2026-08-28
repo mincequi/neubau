@@ -21,34 +21,34 @@ std::string instanceId(const std::string& instanceName) {
 } // namespace
 
 ShellyThing::ShellyThing(common::MdnsService service)
-    : service_{std::move(service)}
-    , id_{txtValue(service_, "id")}
-    , model_{txtValue(service_, "app")}
-    , generation_{txtValue(service_, "gen")}
-    , firmwareVersion_{txtValue(service_, "ver")} {
-    if (id_.empty()) {
-        id_ = instanceId(service_.instanceName);
+    : _service{std::move(service)}
+    , _id{txtValue(_service, "id")}
+    , _model{txtValue(_service, "app")}
+    , _generation{txtValue(_service, "gen")}
+    , _firmwareVersion{txtValue(_service, "ver")} {
+    if (_id.empty()) {
+        _id = instanceId(_service.instanceName);
     }
 }
 
 const std::string& ShellyThing::id() const noexcept {
-    return id_;
+    return _id;
 }
 
 const std::string& ShellyThing::model() const noexcept {
-    return model_;
+    return _model;
 }
 
 const std::string& ShellyThing::generation() const noexcept {
-    return generation_;
+    return _generation;
 }
 
 const std::string& ShellyThing::firmwareVersion() const noexcept {
-    return firmwareVersion_;
+    return _firmwareVersion;
 }
 
 const common::MdnsService& ShellyThing::service() const noexcept {
-    return service_;
+    return _service;
 }
 
 std::ostream& operator<<(std::ostream& stream, const ShellyThing& thing) {

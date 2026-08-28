@@ -8,51 +8,69 @@
 
 namespace neubau::common {
 
-template<typename Observable>
+template<typename T>
 class Flow {
 public:
-    explicit Flow(Observable observable)
-        : observable_{std::move(observable)} {}
+    explicit Flow(rpp::dynamic_observable<T> observable)
+        : _observable{std::move(observable)} {}
 
     template<typename Transform>
     [[nodiscard]] auto map(Transform transform) const {
-        auto mapped = observable_ | rpp::operators::map(std::move(transform));
-        return Flow<decltype(mapped)>{std::move(mapped)};
+        auto mapped = _observable | rpp::operators::map(std::move(transform));
+        using Result = typename decltype(mapped)::value_type;
+        return Flow<Result>{mapped.as_dynamic()};
     }
 
     template<typename Predicate>
-    [[nodiscard]] auto filter(Predicate predicate) const {
-        auto filtered = observable_ | rpp::operators::filter(std::move(predicate));
-        return Flow<decltype(filtered)>{std::move(filtered)};
+    [[nodiscard]] Flow<T> filter(Predicate predicate) const {
+        auto filtered =
+            _observable | rpp::operators::filter(std::move(predicate));
+        return Flow<T>{filtered.as_dynamic()};
     }
 
     template<typename Action>
-    [[nodiscard]] auto onEach(Action action) const {
-        auto observed = observable_ | rpp::operators::tap(std::move(action));
-        return Flow<decltype(observed)>{std::move(observed)};
+    [[nodiscard]] Flow<T> onEach(Action action) const {
+        auto observed = _observable | rpp::operators::tap(std::move(action));
+        return Flow<T>{observed.as_dynamic()};
     }
 
     template<typename Collector>
-    void collect(Collector collector) const {
-        observable_.subscribe(std::move(collector));
+    [[nodiscard]] auto collect(Collector collector) const {
+        return _observable.subscribe(std::move(collector));
+    }
+
+    template<typename Collector, typename ErrorHandler, typename Completion>
+    [[nodiscard]] auto collect(
+        Collector collector,
+        ErrorHandler errorHandler,
+        Completion completion) const {
+        return _observable.subscribe(
+            std::move(collector),
+            std::move(errorHandler),
+            std::move(completion));
     }
 
 private:
-    Observable observable_;
+    rpp::dynamic_observable<T> _observable;
 };
 
 template<typename T, typename... Ts>
     requires (std::same_as<std::decay_t<T>, std::decay_t<Ts>> && ...)
 [[nodiscard]] auto flowOf(T&& value, Ts&&... values) {
-    return Flow{rpp::source::just<rpp::memory_model::use_shared>(
+    auto observable = rpp::source::just<rpp::memory_model::use_shared>(
         std::forward<T>(value),
-        std::forward<Ts>(values)...)};
+        std::forward<Ts>(values)...);
+    return Flow<typename decltype(observable)::value_type>{
+        observable.as_dynamic()};
 }
 
 template<typename Iterable>
 [[nodiscard]] auto from(Iterable&& iterable) {
-    return Flow{rpp::source::from_iterable<rpp::memory_model::use_shared>(
-        std::forward<Iterable>(iterable))};
+    auto observable =
+        rpp::source::from_iterable<rpp::memory_model::use_shared>(
+            std::forward<Iterable>(iterable));
+    return Flow<typename decltype(observable)::value_type>{
+        observable.as_dynamic()};
 }
 
 } // namespace neubau::common

@@ -5,14 +5,10 @@
 #include "common/flow.hpp"
 #include "shelly/ShellyThing.hpp"
 
-#include <rpp/rpp.hpp>
-
 #include <chrono>
 #include <memory>
 
 namespace neubau::shelly {
-
-using ShellyThingFlow = common::Flow<rpp::dynamic_observable<ShellyThing>>;
 
 class ShellyDiscovery : public common::ThingDiscovery {
 public:
@@ -22,10 +18,8 @@ public:
 
     ShellyDiscovery(const ShellyDiscovery&) = delete;
     ShellyDiscovery& operator=(const ShellyDiscovery&) = delete;
-    ShellyDiscovery(ShellyDiscovery&&) noexcept = default;
-    ShellyDiscovery& operator=(ShellyDiscovery&&) noexcept = default;
 
-    [[nodiscard]] ShellyThingFlow discover() const;
+    [[nodiscard]] common::Flow<ShellyThing> discover() const;
     void stop() noexcept override;
 
     [[nodiscard]] static bool isShellyService(
@@ -34,7 +28,7 @@ public:
 private:
     struct State;
 
-    std::shared_ptr<State> state_;
+    std::shared_ptr<State> _state;
 };
 
 } // namespace neubau::shelly

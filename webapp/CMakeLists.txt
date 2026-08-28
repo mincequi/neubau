@@ -5,14 +5,6 @@ cmrc_add_resource_library(
     index.html
 )
 
-if(TARGET hv)
-    set(NEUBAU_LIBHV_TARGET hv)
-elseif(TARGET hv_static)
-    set(NEUBAU_LIBHV_TARGET hv_static)
-else()
-    message(FATAL_ERROR "libhv target not available")
-endif()
-
 add_library(neubau_webapp WebAppService.cpp)
 add_library(neubau::webapp ALIAS neubau_webapp)
 

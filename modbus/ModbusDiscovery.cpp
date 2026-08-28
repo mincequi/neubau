@@ -1,17 +1,17 @@
 #include "modbus/ModbusDiscovery.hpp"
 
+#include "common/Reactor.hpp"
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
-#include <cerrno>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #endif
+
+#include <hv/TcpClient.h>
 
 #include <algorithm>
 #include <array>
@@ -21,13 +21,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <future>
+#include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <ostream>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -36,70 +38,13 @@
 #include <vector>
 
 namespace neubau::modbus {
-
-struct ModbusDiscovery::State {
-    std::atomic_bool stopRequested{false};
-    std::atomic_bool running{false};
-};
-
 namespace {
-
-#ifdef _WIN32
-using NativeSocket = SOCKET;
-constexpr NativeSocket invalidSocket = INVALID_SOCKET;
-#else
-using NativeSocket = int;
-constexpr NativeSocket invalidSocket = -1;
-#endif
 
 constexpr std::uint8_t encapsulatedInterfaceTransport{0x2b};
 constexpr std::uint8_t readDeviceIdentification{0x0e};
 constexpr std::uint8_t basicDeviceIdentification{0x01};
 constexpr std::uint8_t readHoldingRegistersFunction{0x03};
 constexpr std::size_t maxModbusPduLength{253};
-
-class SocketHandle {
-public:
-    explicit SocketHandle(NativeSocket socket = invalidSocket)
-        : socket_{socket} {}
-
-    ~SocketHandle() {
-        if (socket_ != invalidSocket) {
-#ifdef _WIN32
-            closesocket(socket_);
-#else
-            close(socket_);
-#endif
-        }
-    }
-
-    SocketHandle(const SocketHandle&) = delete;
-    SocketHandle& operator=(const SocketHandle&) = delete;
-    SocketHandle(SocketHandle&& other) noexcept
-        : socket_{std::exchange(other.socket_, invalidSocket)} {}
-
-    [[nodiscard]] NativeSocket get() const noexcept { return socket_; }
-    [[nodiscard]] explicit operator bool() const noexcept {
-        return socket_ != invalidSocket;
-    }
-
-private:
-    NativeSocket socket_;
-};
-
-#ifdef _WIN32
-void ensureSocketsInitialized() {
-    static const bool initialized = [] {
-        WSADATA data{};
-        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    }();
-    if (!initialized) {
-        throw std::runtime_error("failed to initialize Windows sockets");
-    }
-}
-#else
-void ensureSocketsInitialized() {}
-#endif
 
 std::uint16_t readU16(const std::uint8_t* data) {
     return static_cast<std::uint16_t>(
@@ -110,182 +55,6 @@ std::uint16_t readU16(const std::uint8_t* data) {
 void writeU16(std::uint8_t* data, std::uint16_t value) {
     data[0] = static_cast<std::uint8_t>(value >> 8U);
     data[1] = static_cast<std::uint8_t>(value & 0xffU);
-}
-
-bool setNonBlocking(NativeSocket socket, bool enabled) {
-#ifdef _WIN32
-    u_long mode = enabled ? 1UL : 0UL;
-    return ioctlsocket(socket, FIONBIO, &mode) == 0;
-#else
-    const auto flags = fcntl(socket, F_GETFL, 0);
-    if (flags < 0) {
-        return false;
-    }
-    const auto updated = enabled ? flags | O_NONBLOCK : flags & ~O_NONBLOCK;
-    return fcntl(socket, F_SETFL, updated) == 0;
-#endif
-}
-
-bool connectInProgress() {
-#ifdef _WIN32
-    const auto error = WSAGetLastError();
-    return error == WSAEWOULDBLOCK || error == WSAEINPROGRESS;
-#else
-    return errno == EINPROGRESS;
-#endif
-}
-
-bool waitForConnection(
-    NativeSocket socket,
-    std::chrono::milliseconds timeout) {
-    fd_set writable;
-    FD_ZERO(&writable);
-    FD_SET(socket, &writable);
-
-    timeval value{
-        .tv_sec = static_cast<long>(timeout.count() / 1000),
-        .tv_usec = static_cast<int>((timeout.count() % 1000) * 1000),
-    };
-#ifdef _WIN32
-    const auto selected = select(0, nullptr, &writable, nullptr, &value);
-#else
-    const auto selected =
-        select(socket + 1, nullptr, &writable, nullptr, &value);
-#endif
-    if (selected <= 0) {
-        return false;
-    }
-
-    int socketError = 0;
-#ifdef _WIN32
-    int errorLength = sizeof(socketError);
-#else
-    socklen_t errorLength = sizeof(socketError);
-#endif
-    return getsockopt(
-               socket,
-               SOL_SOCKET,
-               SO_ERROR,
-               reinterpret_cast<char*>(&socketError),
-               &errorLength)
-            == 0
-        && socketError == 0;
-}
-
-bool setIoTimeout(
-    NativeSocket socket,
-    std::chrono::milliseconds timeout) {
-#ifdef _WIN32
-    const auto value = static_cast<DWORD>(timeout.count());
-    return setsockopt(
-               socket,
-               SOL_SOCKET,
-               SO_RCVTIMEO,
-               reinterpret_cast<const char*>(&value),
-               sizeof(value))
-            == 0
-        && setsockopt(
-               socket,
-               SOL_SOCKET,
-               SO_SNDTIMEO,
-               reinterpret_cast<const char*>(&value),
-               sizeof(value))
-            == 0;
-#else
-    const timeval value{
-        .tv_sec = static_cast<long>(timeout.count() / 1000),
-        .tv_usec = static_cast<int>((timeout.count() % 1000) * 1000),
-    };
-    return setsockopt(
-               socket, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value))
-            == 0
-        && setsockopt(
-               socket, SOL_SOCKET, SO_SNDTIMEO, &value, sizeof(value))
-            == 0;
-#endif
-}
-
-std::optional<SocketHandle> connectTo(
-    const std::string& address,
-    std::uint16_t port,
-    std::chrono::milliseconds connectTimeout,
-    std::chrono::milliseconds responseTimeout) {
-    ensureSocketsInitialized();
-    SocketHandle socket{::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)};
-    if (!socket || !setNonBlocking(socket.get(), true)) {
-        return std::nullopt;
-    }
-
-    sockaddr_in endpoint{};
-    endpoint.sin_family = AF_INET;
-    endpoint.sin_port = htons(port);
-    if (inet_pton(AF_INET, address.c_str(), &endpoint.sin_addr) != 1) {
-        return std::nullopt;
-    }
-
-    const auto connected = connect(
-        socket.get(),
-        reinterpret_cast<const sockaddr*>(&endpoint),
-        sizeof(endpoint));
-    if (connected != 0
-        && (!connectInProgress()
-            || !waitForConnection(socket.get(), connectTimeout))) {
-        return std::nullopt;
-    }
-    if (!setNonBlocking(socket.get(), false)
-        || !setIoTimeout(socket.get(), responseTimeout)) {
-        return std::nullopt;
-    }
-
-#ifdef SO_NOSIGPIPE
-    const int enabled = 1;
-    setsockopt(
-        socket.get(), SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled));
-#endif
-    return std::optional<SocketHandle>{std::move(socket)};
-}
-
-bool sendAll(
-    NativeSocket socket,
-    const std::uint8_t* data,
-    std::size_t size) {
-    while (size > 0) {
-#ifdef MSG_NOSIGNAL
-        constexpr int flags = MSG_NOSIGNAL;
-#else
-        constexpr int flags = 0;
-#endif
-        const auto sent = send(
-            socket,
-            reinterpret_cast<const char*>(data),
-            static_cast<int>(size),
-            flags);
-        if (sent <= 0) {
-            return false;
-        }
-        data += sent;
-        size -= static_cast<std::size_t>(sent);
-    }
-    return true;
-}
-
-bool receiveAll(
-    NativeSocket socket,
-    std::uint8_t* data,
-    std::size_t size) {
-    while (size > 0) {
-        const auto received = recv(
-            socket,
-            reinterpret_cast<char*>(data),
-            static_cast<int>(size),
-            0);
-        if (received <= 0) {
-            return false;
-        }
-        data += received;
-        size -= static_cast<std::size_t>(received);
-    }
-    return true;
 }
 
 std::array<std::uint8_t, 11> deviceIdRequest(
@@ -303,180 +72,375 @@ std::array<std::uint8_t, 11> deviceIdRequest(
     return request;
 }
 
-std::array<std::uint8_t, 12> holdingRegisterProbe(
+std::array<std::uint8_t, 12> holdingRegisterRequest(
     std::uint16_t transactionId,
-    std::uint8_t unitId) {
+    std::uint8_t unitId,
+    std::uint16_t startAddress,
+    std::uint16_t registerCount) {
     std::array<std::uint8_t, 12> request{};
     writeU16(request.data(), transactionId);
     writeU16(request.data() + 4, 6);
     request[6] = unitId;
     request[7] = readHoldingRegistersFunction;
-    writeU16(request.data() + 8, 0);
-    writeU16(request.data() + 10, 1);
+    writeU16(request.data() + 8, startAddress);
+    writeU16(request.data() + 10, registerCount);
     return request;
 }
 
-std::optional<ModbusThing> identifyWithMei(
-    const std::string& address,
-    const ModbusDiscoveryOptions& options,
-    std::uint8_t unitId) {
-    auto socket = connectTo(
-        address,
-        options.port,
-        options.connectTimeout,
-        options.responseTimeout);
-    if (!socket) {
-        return std::nullopt;
+using Response = std::vector<std::uint8_t>;
+using ExchangeResult =
+    std::function<void(std::optional<Response>, std::exception_ptr)>;
+
+class TcpExchange : public std::enable_shared_from_this<TcpExchange> {
+public:
+    TcpExchange(
+        std::string address,
+        std::uint16_t port,
+        std::chrono::milliseconds connectTimeout,
+        std::chrono::milliseconds responseTimeout,
+        ExchangeResult result)
+        : _address{std::move(address)}
+        , _port{port}
+        , _connectTimeout{connectTimeout}
+        , _responseTimeout{responseTimeout}
+        , _result{std::move(result)}
+        , _client{std::make_shared<hv::TcpClientEventLoopTmpl<>>(
+              common::Reactor::loop())} {}
+
+    void start(Response request) {
+        _request = std::move(request);
+        auto self = shared_from_this();
+        common::Reactor::loop()->queueInLoop([self] { self->startInLoop(); });
     }
 
-    ModbusThing thing{
-        .address = address,
-        .port = options.port,
-        .unitId = unitId,
-    };
-    std::uint16_t transactionId = 1;
-    std::uint8_t objectId = 0;
+    void cancel() {
+        auto self = shared_from_this();
+        common::Reactor::loop()->queueInLoop([self] {
+            self->finish(
+                std::nullopt,
+                std::make_exception_ptr(
+                    std::runtime_error("Modbus operation stopped")));
+        });
+    }
 
-    for (std::size_t page = 0; page < 8; ++page) {
+private:
+    void startInLoop() {
+        if (_finished) {
+            return;
+        }
+        _client->setConnectTimeout(static_cast<int>(_connectTimeout.count()));
+        _client->onConnection =
+            [self = shared_from_this()](const hv::SocketChannelPtr& channel) {
+                if (channel->isConnected()) {
+                    self->onConnected();
+                } else if (!self->_finished) {
+                    self->finish(
+                        std::nullopt,
+                        std::make_exception_ptr(std::runtime_error(
+                            "Modbus TCP connection failed")));
+                }
+            };
+        _client->onMessage =
+            [self = shared_from_this()](
+                const hv::SocketChannelPtr&,
+                hv::Buffer* buffer) {
+                self->onData(buffer->data(), buffer->size());
+            };
+        if (_client->createsocket(_port, _address.c_str()) < 0) {
+            finish(
+                std::nullopt,
+                std::make_exception_ptr(
+                    std::runtime_error("invalid Modbus TCP endpoint")));
+            return;
+        }
+        _client->start();
+    }
+
+    void onConnected() {
+        if (_finished) {
+            return;
+        }
+        if (_client->send(_request.data(), static_cast<int>(_request.size()))
+            < 0) {
+            finish(
+                std::nullopt,
+                std::make_exception_ptr(
+                    std::runtime_error("Modbus TCP write failed")));
+            return;
+        }
+        _timer = common::Reactor::loop()->setTimeout(
+            static_cast<std::uint32_t>(_responseTimeout.count()),
+            [self = shared_from_this()](hv::TimerID) {
+                self->finish(
+                    std::nullopt,
+                    std::make_exception_ptr(
+                        std::runtime_error("Modbus response timed out")));
+            });
+    }
+
+    void onData(const void* data, std::size_t size) {
+        if (_finished) {
+            return;
+        }
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        _response.insert(_response.end(), bytes, bytes + size);
+        if (_response.size() < 7) {
+            return;
+        }
+        const auto bodyLength = readU16(_response.data() + 4);
+        if (bodyLength < 2 || bodyLength - 1 > maxModbusPduLength) {
+            finish(
+                std::nullopt,
+                std::make_exception_ptr(
+                    std::runtime_error("invalid Modbus response length")));
+            return;
+        }
+        const auto expected = static_cast<std::size_t>(6 + bodyLength);
+        if (_response.size() < expected) {
+            return;
+        }
+        if (_response.size() != expected) {
+            finish(
+                std::nullopt,
+                std::make_exception_ptr(
+                    std::runtime_error("unexpected trailing Modbus data")));
+            return;
+        }
+        finish(std::move(_response), nullptr);
+    }
+
+    void finish(std::optional<Response> response, std::exception_ptr error) {
+        if (_finished) {
+            return;
+        }
+        _finished = true;
+        if (_timer != INVALID_TIMER_ID) {
+            common::Reactor::loop()->killTimer(_timer);
+            _timer = INVALID_TIMER_ID;
+        }
+        if (_client->channel) {
+            if (!_client->channel->isClosed()) {
+                _client->channel->close();
+            }
+        }
+        auto result = std::move(_result);
+        auto client = std::move(_client);
+        common::Reactor::loop()->setTimeout(
+            1,
+            [client = std::move(client)](hv::TimerID) mutable {
+                client->onConnection = nullptr;
+                client->onMessage = nullptr;
+                client->onWriteComplete = nullptr;
+                client.reset();
+            });
+        if (result) {
+            result(std::move(response), error);
+        }
+    }
+
+    std::string _address;
+    std::uint16_t _port;
+    std::chrono::milliseconds _connectTimeout;
+    std::chrono::milliseconds _responseTimeout;
+    ExchangeResult _result;
+    std::shared_ptr<hv::TcpClientEventLoopTmpl<>> _client;
+    Response _request;
+    Response _response;
+    hv::TimerID _timer{INVALID_TIMER_ID};
+    bool _finished{};
+};
+
+bool validEnvelope(
+    const Response& response,
+    std::uint16_t transactionId,
+    std::uint8_t unitId) {
+    return response.size() >= 8
+        && readU16(response.data()) == transactionId
+        && readU16(response.data() + 2) == 0 && response[6] == unitId;
+}
+
+using IdentifyResult =
+    std::function<void(std::optional<ModbusThing>)>;
+
+class Identifier : public std::enable_shared_from_this<Identifier> {
+public:
+    Identifier(
+        std::string address,
+        ModbusDiscoveryOptions options,
+        std::uint8_t unitId,
+        IdentifyResult result)
+        : _address{std::move(address)}
+        , _options{std::move(options)}
+        , _unitId{unitId}
+        , _result{std::move(result)}
+        , _thing{
+              .address = _address,
+              .port = _options.port,
+              .unitId = _unitId,
+          } {}
+
+    void start() { requestMei(); }
+
+    void cancel() {
+        _finished = true;
+        if (_exchange) {
+            _exchange->cancel();
+        }
+        _result = nullptr;
+    }
+
+private:
+    void requestMei() {
         const auto request =
-            deviceIdRequest(transactionId, unitId, objectId);
-        if (!sendAll(socket->get(), request.data(), request.size())) {
-            return std::nullopt;
-        }
+            deviceIdRequest(_transactionId, _unitId, _objectId);
+        auto self = shared_from_this();
+        _exchange = std::make_shared<TcpExchange>(
+            _address,
+            _options.port,
+            _options.connectTimeout,
+            _options.responseTimeout,
+            [self](std::optional<Response> response, std::exception_ptr error) {
+                self->onMei(std::move(response), error);
+            });
+        _exchange->start({request.begin(), request.end()});
+    }
 
-        std::array<std::uint8_t, 7> header{};
-        if (!receiveAll(socket->get(), header.data(), header.size())
-            || readU16(header.data()) != transactionId
-            || readU16(header.data() + 2) != 0
-            || header[6] != unitId) {
-            return std::nullopt;
+    void onMei(
+        std::optional<Response> response,
+        std::exception_ptr error) {
+        _exchange.reset();
+        if (_finished) {
+            return;
         }
-
-        const auto responseLength = readU16(header.data() + 4);
-        if (responseLength < 2
-            || responseLength - 1 > maxModbusPduLength) {
-            return std::nullopt;
+        if (error || !response
+            || !validEnvelope(*response, _transactionId, _unitId)) {
+            requestFallback();
+            return;
         }
-
-        std::vector<std::uint8_t> pdu(responseLength - 1);
-        if (!receiveAll(socket->get(), pdu.data(), pdu.size())) {
-            return std::nullopt;
-        }
+        const auto pdu = std::span{
+            response->data() + 7, response->size() - 7};
         if (pdu[0] == (encapsulatedInterfaceTransport | 0x80U)) {
-            thing.exceptionCode = pdu.size() > 1
+            _thing.exceptionCode = pdu.size() > 1
                 ? std::optional<std::uint8_t>{pdu[1]}
                 : std::nullopt;
-            return thing;
+            complete(_thing);
+            return;
         }
         if (pdu.size() < 7 || pdu[0] != encapsulatedInterfaceTransport
             || pdu[1] != readDeviceIdentification) {
-            return std::nullopt;
+            requestFallback();
+            return;
         }
 
-        thing.hasDeviceIdentification = true;
+        _thing.hasDeviceIdentification = true;
         const auto moreFollows = pdu[4] != 0;
         const auto nextObjectId = pdu[5];
         const auto objectCount = pdu[6];
         std::size_t offset = 7;
         for (std::uint8_t index = 0; index < objectCount; ++index) {
             if (offset + 2 > pdu.size()) {
-                return std::nullopt;
+                requestFallback();
+                return;
             }
             const auto currentObjectId = pdu[offset++];
             const auto objectLength = pdu[offset++];
             if (offset + objectLength > pdu.size()) {
-                return std::nullopt;
+                requestFallback();
+                return;
             }
-            thing.objects[currentObjectId] = std::string{
+            _thing.objects[currentObjectId] = std::string{
                 reinterpret_cast<const char*>(pdu.data() + offset),
                 objectLength};
             offset += objectLength;
         }
-
-        if (!moreFollows || nextObjectId == objectId) {
-            break;
+        if (moreFollows && nextObjectId != _objectId && _page < 7) {
+            _objectId = nextObjectId;
+            ++_transactionId;
+            ++_page;
+            requestMei();
+            return;
         }
-        objectId = nextObjectId;
-        ++transactionId;
+        if (const auto value = _thing.objects.find(0);
+            value != _thing.objects.end()) {
+            _thing.vendorName = value->second;
+        }
+        if (const auto value = _thing.objects.find(1);
+            value != _thing.objects.end()) {
+            _thing.productCode = value->second;
+        }
+        if (const auto value = _thing.objects.find(2);
+            value != _thing.objects.end()) {
+            _thing.revision = value->second;
+        }
+        complete(_thing);
     }
 
-    if (const auto value = thing.objects.find(0);
-        value != thing.objects.end()) {
-        thing.vendorName = value->second;
-    }
-    if (const auto value = thing.objects.find(1);
-        value != thing.objects.end()) {
-        thing.productCode = value->second;
-    }
-    if (const auto value = thing.objects.find(2);
-        value != thing.objects.end()) {
-        thing.revision = value->second;
-    }
-    return thing;
-}
-
-std::optional<ModbusThing> identifyWithReadProbe(
-    const std::string& address,
-    const ModbusDiscoveryOptions& options,
-    std::uint8_t unitId) {
-    auto socket = connectTo(
-        address,
-        options.port,
-        options.connectTimeout,
-        options.responseTimeout);
-    if (!socket) {
-        return std::nullopt;
+    void requestFallback() {
+        constexpr std::uint16_t transactionId{1};
+        const auto request =
+            holdingRegisterRequest(transactionId, _unitId, 0, 1);
+        auto self = shared_from_this();
+        _exchange = std::make_shared<TcpExchange>(
+            _address,
+            _options.port,
+            _options.connectTimeout,
+            _options.responseTimeout,
+            [self](std::optional<Response> response, std::exception_ptr error) {
+                self->onFallback(std::move(response), error);
+            });
+        _exchange->start({request.begin(), request.end()});
     }
 
-    constexpr std::uint16_t transactionId = 1;
-    const auto request = holdingRegisterProbe(transactionId, unitId);
-    if (!sendAll(socket->get(), request.data(), request.size())) {
-        return std::nullopt;
+    void onFallback(
+        std::optional<Response> response,
+        std::exception_ptr error) {
+        _exchange.reset();
+        if (_finished) {
+            return;
+        }
+        constexpr std::uint16_t transactionId{1};
+        if (error || !response
+            || !validEnvelope(*response, transactionId, _unitId)) {
+            complete(std::nullopt);
+            return;
+        }
+        const auto pdu = std::span{
+            response->data() + 7, response->size() - 7};
+        if (pdu[0] == readHoldingRegistersFunction) {
+            complete(_thing);
+            return;
+        }
+        if (pdu[0] == (readHoldingRegistersFunction | 0x80U)
+            && pdu.size() >= 2) {
+            _thing.exceptionCode = pdu[1];
+            complete(_thing);
+            return;
+        }
+        complete(std::nullopt);
     }
 
-    std::array<std::uint8_t, 7> header{};
-    if (!receiveAll(socket->get(), header.data(), header.size())
-        || readU16(header.data()) != transactionId
-        || readU16(header.data() + 2) != 0 || header[6] != unitId) {
-        return std::nullopt;
+    void complete(std::optional<ModbusThing> thing) {
+        if (_finished) {
+            return;
+        }
+        _finished = true;
+        auto result = std::move(_result);
+        if (result) {
+            result(std::move(thing));
+        }
     }
 
-    const auto responseLength = readU16(header.data() + 4);
-    if (responseLength < 2 || responseLength - 1 > maxModbusPduLength) {
-        return std::nullopt;
-    }
-
-    std::vector<std::uint8_t> pdu(responseLength - 1);
-    if (!receiveAll(socket->get(), pdu.data(), pdu.size())
-        || pdu.empty()) {
-        return std::nullopt;
-    }
-
-    ModbusThing thing{
-        .address = address,
-        .port = options.port,
-        .unitId = unitId,
-    };
-    if (pdu[0] == readHoldingRegistersFunction) {
-        return thing;
-    }
-    if (pdu[0] == (readHoldingRegistersFunction | 0x80U)
-        && pdu.size() >= 2) {
-        thing.exceptionCode = pdu[1];
-        return thing;
-    }
-    return std::nullopt;
-}
-
-std::optional<ModbusThing> identify(
-    const std::string& address,
-    const ModbusDiscoveryOptions& options,
-    std::uint8_t unitId) {
-    if (auto identified = identifyWithMei(address, options, unitId)) {
-        return identified;
-    }
-    return identifyWithReadProbe(address, options, unitId);
-}
+    std::string _address;
+    ModbusDiscoveryOptions _options;
+    std::uint8_t _unitId;
+    IdentifyResult _result;
+    ModbusThing _thing;
+    std::shared_ptr<TcpExchange> _exchange;
+    std::uint16_t _transactionId{1};
+    std::uint8_t _objectId{};
+    std::size_t _page{};
+    bool _finished{};
+};
 
 std::uint32_t parseIpv4(const std::string& address) {
     in_addr parsed{};
@@ -496,38 +460,29 @@ std::string formatIpv4(std::uint32_t address) {
 }
 
 std::optional<std::uint32_t> primaryIpv4Address() {
-    ensureSocketsInitialized();
-    SocketHandle socket{::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)};
-    if (!socket) {
-        return std::nullopt;
-    }
-
-    sockaddr_in destination{};
-    destination.sin_family = AF_INET;
-    destination.sin_port = htons(53);
-    if (inet_pton(AF_INET, "8.8.8.8", &destination.sin_addr) != 1
-        || connect(
-               socket.get(),
-               reinterpret_cast<const sockaddr*>(&destination),
-               sizeof(destination))
-            != 0) {
-        return std::nullopt;
-    }
-
-    sockaddr_in local{};
 #ifdef _WIN32
-    int localLength = sizeof(local);
+    return std::nullopt;
 #else
-    socklen_t localLength = sizeof(local);
-#endif
-    if (getsockname(
-            socket.get(),
-            reinterpret_cast<sockaddr*>(&local),
-            &localLength)
-        != 0) {
+    ifaddrs* interfaces{};
+    if (getifaddrs(&interfaces) != 0) {
         return std::nullopt;
     }
-    return ntohl(local.sin_addr.s_addr);
+    std::optional<std::uint32_t> result;
+    for (auto* entry = interfaces; entry != nullptr; entry = entry->ifa_next) {
+        if (entry->ifa_addr == nullptr
+            || entry->ifa_addr->sa_family != AF_INET
+            || (entry->ifa_flags & IFF_LOOPBACK) != 0
+            || (entry->ifa_flags & IFF_UP) == 0) {
+            continue;
+        }
+        const auto* address =
+            reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
+        result = ntohl(address->sin_addr.s_addr);
+        break;
+    }
+    freeifaddrs(interfaces);
+    return result;
+#endif
 }
 
 void validateOptions(const ModbusDiscoveryOptions& options) {
@@ -553,6 +508,12 @@ void validateOptions(const ModbusDiscoveryOptions& options) {
 
 } // namespace
 
+struct ModbusDiscovery::State {
+    std::atomic_bool running{false};
+    std::mutex mutex;
+    std::function<void()> stopAction;
+};
+
 std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing) {
     stream << "Modbus " << thing.address << ':' << thing.port
            << " unit " << static_cast<unsigned int>(thing.unitId) << '\n';
@@ -577,7 +538,7 @@ std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing) {
     return stream;
 }
 
-std::optional<std::vector<std::uint16_t>> readHoldingRegisters(
+common::Flow<std::vector<std::uint16_t>> readHoldingRegisters(
     const ModbusThing& thing,
     std::uint16_t startAddress,
     std::uint16_t registerCount,
@@ -587,158 +548,234 @@ std::optional<std::vector<std::uint16_t>> readHoldingRegisters(
         throw std::invalid_argument(
             "Modbus reads require between 1 and 125 registers");
     }
-
-    auto socket = connectTo(
-        thing.address,
-        thing.port,
-        connectTimeout,
-        responseTimeout);
-    if (!socket) {
-        return std::nullopt;
+    if (connectTimeout <= std::chrono::milliseconds::zero()
+        || responseTimeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("Modbus read timeouts must be positive");
     }
 
-    constexpr std::uint16_t transactionId = 1;
-    std::array<std::uint8_t, 12> request{};
-    writeU16(request.data(), transactionId);
-    writeU16(request.data() + 4, 6);
-    request[6] = thing.unitId;
-    request[7] = readHoldingRegistersFunction;
-    writeU16(request.data() + 8, startAddress);
-    writeU16(request.data() + 10, registerCount);
-    if (!sendAll(socket->get(), request.data(), request.size())) {
-        return std::nullopt;
-    }
-
-    std::array<std::uint8_t, 7> header{};
-    if (!receiveAll(socket->get(), header.data(), header.size())
-        || readU16(header.data()) != transactionId
-        || readU16(header.data() + 2) != 0
-        || header[6] != thing.unitId) {
-        return std::nullopt;
-    }
-
-    const auto responseLength = readU16(header.data() + 4);
-    if (responseLength < 2 || responseLength - 1 > maxModbusPduLength) {
-        return std::nullopt;
-    }
-    std::vector<std::uint8_t> pdu(responseLength - 1);
-    if (!receiveAll(socket->get(), pdu.data(), pdu.size())
-        || pdu.size() < 2 || pdu[0] != readHoldingRegistersFunction
-        || pdu[1] != registerCount * 2
-        || pdu.size() != static_cast<std::size_t>(pdu[1]) + 2) {
-        return std::nullopt;
-    }
-
-    std::vector<std::uint16_t> registers;
-    registers.reserve(registerCount);
-    for (std::size_t offset = 2; offset < pdu.size(); offset += 2) {
-        registers.push_back(readU16(pdu.data() + offset));
-    }
-    return registers;
+    auto observable = rpp::source::create<std::vector<std::uint16_t>>(
+        [thing, startAddress, registerCount, connectTimeout, responseTimeout](
+            auto&& observer) {
+            using Observer = std::decay_t<decltype(observer)>;
+            auto sharedObserver =
+                std::make_shared<Observer>(std::move(observer));
+            constexpr std::uint16_t transactionId{1};
+            const auto request = holdingRegisterRequest(
+                transactionId,
+                thing.unitId,
+                startAddress,
+                registerCount);
+            auto exchange = std::make_shared<TcpExchange>(
+                thing.address,
+                thing.port,
+                connectTimeout,
+                responseTimeout,
+                [sharedObserver, thing, registerCount](
+                    std::optional<Response> response,
+                    std::exception_ptr error) {
+                    if (error) {
+                        sharedObserver->on_error(error);
+                        return;
+                    }
+                    constexpr std::uint16_t transactionId{1};
+                    if (!response
+                        || !validEnvelope(
+                            *response, transactionId, thing.unitId)) {
+                        sharedObserver->on_error(std::make_exception_ptr(
+                            std::runtime_error(
+                                "invalid Modbus response envelope")));
+                        return;
+                    }
+                    const auto pdu = std::span{
+                        response->data() + 7, response->size() - 7};
+                    if (pdu[0]
+                            == (readHoldingRegistersFunction | 0x80U)
+                        && pdu.size() >= 2) {
+                        sharedObserver->on_error(std::make_exception_ptr(
+                            std::runtime_error(
+                                "Modbus holding-register exception "
+                                + std::to_string(pdu[1]))));
+                        return;
+                    }
+                    if (pdu.size() < 2
+                        || pdu[0] != readHoldingRegistersFunction
+                        || pdu[1] != registerCount * 2
+                        || pdu.size()
+                            != static_cast<std::size_t>(pdu[1]) + 2) {
+                        sharedObserver->on_error(std::make_exception_ptr(
+                            std::runtime_error(
+                                "invalid holding-register response")));
+                        return;
+                    }
+                    std::vector<std::uint16_t> registers;
+                    registers.reserve(registerCount);
+                    for (std::size_t offset = 2; offset < pdu.size();
+                         offset += 2) {
+                        registers.push_back(
+                            readU16(pdu.data() + offset));
+                    }
+                    sharedObserver->on_next(std::move(registers));
+                    sharedObserver->on_completed();
+                });
+            exchange->start({request.begin(), request.end()});
+        });
+    return common::Flow<std::vector<std::uint16_t>>{
+        observable.as_dynamic()};
 }
 
 ModbusDiscovery::ModbusDiscovery(ModbusDiscoveryOptions options)
-    : state_{std::make_shared<State>()}
-    , options_{std::move(options)} {
-    validateOptions(options_);
+    : _state{std::make_shared<State>()}
+    , _options{std::move(options)} {
+    validateOptions(_options);
 
     std::set<std::string> uniqueAddresses;
-    for (const auto& cidr : options_.cidrs) {
-        const auto remaining = options_.maxHosts - uniqueAddresses.size();
+    for (const auto& cidr : _options.cidrs) {
+        const auto remaining = _options.maxHosts - uniqueAddresses.size();
         for (auto& address : addressesInCidr(cidr, remaining)) {
             uniqueAddresses.insert(std::move(address));
         }
     }
-    addresses_.assign(uniqueAddresses.begin(), uniqueAddresses.end());
+    _addresses.assign(uniqueAddresses.begin(), uniqueAddresses.end());
 }
 
 ModbusDiscovery::~ModbusDiscovery() {
     stop();
 }
 
-ModbusThingFlow ModbusDiscovery::discover() const {
-    if (!state_) {
-        throw std::logic_error("Modbus discovery has been moved from");
-    }
-
+common::Flow<ModbusThing> ModbusDiscovery::discover() const {
     auto observable = rpp::source::create<ModbusThing>(
-        [state = state_, options = options_, addresses = addresses_](
+        [state = _state, options = _options, addresses = _addresses](
             auto&& observer) {
+            using Observer = std::decay_t<decltype(observer)>;
+            auto sharedObserver =
+                std::make_shared<Observer>(std::move(observer));
             if (state->running.exchange(true)) {
-                observer.on_error(std::make_exception_ptr(
-                    std::logic_error("Modbus discovery is already running")));
+                common::Reactor::loop()->queueInLoop([sharedObserver] {
+                    sharedObserver->on_error(std::make_exception_ptr(
+                        std::logic_error(
+                            "Modbus discovery is already running")));
+                });
                 return;
             }
+            struct Session : std::enable_shared_from_this<Session> {
+                Session(
+                    std::shared_ptr<State> sessionState,
+                    ModbusDiscoveryOptions sessionOptions,
+                    std::vector<std::string> sessionAddresses,
+                    std::shared_ptr<Observer> sessionObserver)
+                    : state{std::move(sessionState)}
+                    , options{std::move(sessionOptions)}
+                    , addresses{std::move(sessionAddresses)}
+                    , observer{std::move(sessionObserver)} {}
 
-            struct RunningGuard {
                 std::shared_ptr<State> state;
-                ~RunningGuard() { state->running = false; }
-            } guard{state};
+                ModbusDiscoveryOptions options;
+                std::vector<std::string> addresses;
+                std::shared_ptr<Observer> observer;
+                std::vector<std::shared_ptr<Identifier>> active;
+                std::size_t nextJob{};
+                bool stopped{};
+                bool completed{};
 
-            state->stopRequested = false;
-            std::atomic_size_t nextAddress{0};
-            std::mutex resultsMutex;
-            std::vector<ModbusThing> results;
-            std::exception_ptr error;
+                void start() {
+                    auto self = this->shared_from_this();
+                    {
+                        std::scoped_lock lock{state->mutex};
+                        state->stopAction = [weak = std::weak_ptr{self}] {
+                            if (auto session = weak.lock()) {
+                                common::Reactor::loop()->queueInLoop(
+                                    [session] { session->stop(); });
+                            }
+                        };
+                    }
+                    common::Reactor::loop()->queueInLoop(
+                        [self] { self->fill(); });
+                }
 
-            const auto worker = [&] {
-                try {
-                    while (!state->stopRequested) {
-                        const auto index = nextAddress.fetch_add(1);
-                        if (index >= addresses.size()) {
-                            return;
-                        }
-                        for (const auto unitId : options.unitIds) {
-                            if (state->stopRequested) {
-                                return;
-                            }
-                            auto thing =
-                                identify(addresses[index], options, unitId);
-                            if (thing) {
-                                std::scoped_lock lock{resultsMutex};
-                                results.push_back(std::move(*thing));
-                            }
-                        }
+                void fill() {
+                    if (stopped) {
+                        finish();
+                        return;
                     }
-                } catch (...) {
-                    std::scoped_lock lock{resultsMutex};
-                    if (!error) {
-                        error = std::current_exception();
+                    const auto jobCount =
+                        addresses.size() * options.unitIds.size();
+                    while (active.size() < options.maxConcurrency
+                           && nextJob < jobCount) {
+                        const auto job = nextJob++;
+                        const auto address =
+                            addresses[job / options.unitIds.size()];
+                        const auto unitId =
+                            options.unitIds[job % options.unitIds.size()];
+                        auto self = this->shared_from_this();
+                        auto weakIdentifier =
+                            std::make_shared<std::weak_ptr<Identifier>>();
+                        auto identifier = std::make_shared<Identifier>(
+                            address,
+                            options,
+                            unitId,
+                            [self, weakIdentifier](
+                                std::optional<ModbusThing> thing) {
+                                self->oneFinished(
+                                    weakIdentifier->lock(),
+                                    std::move(thing));
+                            });
+                        *weakIdentifier = identifier;
+                        active.push_back(identifier);
+                        identifier->start();
                     }
-                    state->stopRequested = true;
+                    if (active.empty() && nextJob >= jobCount) {
+                        finish();
+                    }
+                }
+
+                void oneFinished(
+                    const std::shared_ptr<Identifier>& identifier,
+                    std::optional<ModbusThing> thing) {
+                    if (const auto found =
+                            std::find(active.begin(), active.end(), identifier);
+                        found != active.end()) {
+                        active.erase(found);
+                    }
+                    if (!stopped && thing) {
+                        observer->on_next(std::move(*thing));
+                    }
+                    fill();
+                }
+
+                void stop() {
+                    if (stopped) {
+                        return;
+                    }
+                    stopped = true;
+                    auto operations = std::move(active);
+                    for (const auto& operation : operations) {
+                        operation->cancel();
+                    }
+                    finish();
+                }
+
+                void finish() {
+                    if (completed) {
+                        return;
+                    }
+                    completed = true;
+                    {
+                        std::scoped_lock lock{state->mutex};
+                        state->stopAction = nullptr;
+                    }
+                    state->running = false;
+                    observer->on_completed();
                 }
             };
 
-            std::vector<std::future<void>> workers;
-            const auto workerCount =
-                std::min(options.maxConcurrency, addresses.size());
-            workers.reserve(workerCount);
-            for (std::size_t index = 0; index < workerCount; ++index) {
-                workers.push_back(
-                    std::async(std::launch::async, worker));
-            }
-            for (auto& future : workers) {
-                future.get();
-            }
-
-            if (error) {
-                observer.on_error(error);
-                return;
-            }
-
-            std::sort(
-                results.begin(),
-                results.end(),
-                [](const ModbusThing& left, const ModbusThing& right) {
-                    return std::tie(left.address, left.unitId)
-                        < std::tie(right.address, right.unitId);
-                });
-            for (auto& result : results) {
-                observer.on_next(std::move(result));
-            }
-            observer.on_completed();
+            auto session = std::make_shared<Session>(
+                state,
+                options,
+                addresses,
+                std::move(sharedObserver));
+            session->start();
         });
-    return ModbusThingFlow{observable.as_dynamic()};
+    return common::Flow<ModbusThing>{observable.as_dynamic()};
 }
 
 std::vector<std::string> ModbusDiscovery::addressesInCidr(
@@ -811,8 +848,13 @@ std::optional<std::string> ModbusDiscovery::primaryIpv4Cidr(
 }
 
 void ModbusDiscovery::stop() noexcept {
-    if (state_) {
-        state_->stopRequested = true;
+    std::function<void()> action;
+    {
+        std::scoped_lock lock{_state->mutex};
+        action = _state->stopAction;
+    }
+    if (action) {
+        action();
     }
 }
 

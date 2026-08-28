@@ -1,4 +1,9 @@
-add_library(neubau_common MdnsDiscovery.cpp)
+add_library(
+    neubau_common
+    Reactor.cpp
+    Timer.cpp
+    MdnsDiscovery.cpp
+)
 add_library(neubau::common ALIAS neubau_common)
 
 target_include_directories(
@@ -9,6 +14,7 @@ target_include_directories(
 target_link_libraries(
     neubau_common
     PUBLIC
+        ${NEUBAU_LIBHV_TARGET}
         RPP::rpp
     PRIVATE
         mdns::mdns
