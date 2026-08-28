@@ -50,8 +50,8 @@ discovery.discover("_http._tcp");
 ```
 
 The member flow is hot and can be shared by external subscribers. Calling
-`discover()` sends a PTR query through a libhv UDP server bound to the mDNS
-multicast group. Responses include the service instance, endpoint, IPv4/IPv6
+`discover()` sends a PTR query requesting a unicast response through a libhv
+UDP server. Responses include the service instance, endpoint, IPv4/IPv6
 addresses, TXT metadata, and TTL.
 
 ## Epoch-aligned timer
