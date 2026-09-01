@@ -58,15 +58,19 @@ addresses, TXT metadata, and TTL.
 
 ## Epoch-aligned timer
 
-`src/common/Timer.hpp` provides a cancellable flow of timer ticks
-aligned to Unix epoch boundaries. A 15-second timer emits at epoch seconds
-divisible by 15, regardless of when collection starts:
+`src/common/Timer.hpp` consumes the discovery and thing interval flows from a
+`common::ConfigRepository` and exposes cancellable timer ticks aligned to Unix
+epoch boundaries. Equal configured intervals share one libhv schedule:
 
 ```cpp
-neubau::common::Timer timer;
-timer.epochAlignedTicks(std::chrono::seconds{15})
+neubau::common::Timer timer{configRepository};
+timer.discoveryTicks()
     .collect([](const auto& scheduledAt) {
-        pollDevices(scheduledAt);
+        discoverDevices(scheduledAt);
+    });
+timer.thingTicks()
+    .collect([](const auto& scheduledAt) {
+        pollThings(scheduledAt);
     });
 ```
 
@@ -81,6 +85,22 @@ At startup, the application searches `_shelly._tcp` and `_http._tcp`.
 Shelly advertisements and go-eChargers identified by their DNS-SD TXT metadata
 are logged with plog as they arrive.
 
+## TCP port scanning
+
+`common::PortScanner` checks configured address and port pairs concurrently
+using libhv and emits each reachable endpoint:
+
+```cpp
+neubau::common::PortScanner scanner{{
+    .addresses = {"192.168.1.10"},
+    .ports = {80, 443, 502},
+}};
+scanner.candidates().collect([](const neubau::common::OpenPort& candidate) {
+    use(candidate.address, candidate.port);
+});
+scanner.start();
+```
+
 ## Modbus TCP discovery
 
 `src/modbus/ModbusDiscovery.hpp` scans only explicitly configured IPv4 CIDRs and
@@ -93,9 +113,10 @@ neubau::modbus::ModbusDiscovery discovery{{
     .cidrs = {"192.168.1.0/24"},
     .unitIds = {1, 2, 3},
 }};
-discovery.discover().collect([](const neubau::modbus::ModbusThing& thing) {
+discovery.candidates().collect([](const neubau::modbus::ModbusThing& thing) {
     use(thing.address, thing.unitId, thing.vendorName);
 });
+discovery.start();
 ```
 
 CIDR expansion is capped at 4096 hosts by default. Connection and response
@@ -112,10 +133,11 @@ decodes identity fields from Common Model 1:
 neubau::sunspec::SunspecDiscoveryOptions options;
 options.modbus.cidrs = {"192.168.1.0/24"};
 neubau::sunspec::SunspecDiscovery discovery{std::move(options)};
-discovery.discover().collect(
+discovery.candidates().collect(
     [](const neubau::sunspec::SunspecThing& thing) {
         use(thing.manufacturer, thing.model, thing.modelIds);
     });
+discovery.start();
 ```
 
 ## Build

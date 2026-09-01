@@ -12,6 +12,7 @@
 #endif
 
 #include <hv/TcpClient.h>
+#include <rpp/subjects/publish_subject.hpp>
 
 #include <algorithm>
 #include <array>
@@ -509,9 +510,14 @@ void validateOptions(const ModbusDiscoveryOptions& options) {
 } // namespace
 
 struct ModbusDiscovery::State {
+    State()
+        : candidates{subject.get_observable().as_dynamic()} {}
+
     std::atomic_bool running{false};
     std::mutex mutex;
     std::function<void()> stopAction;
+    rpp::subjects::publish_subject<ModbusThing> subject;
+    common::Flow<ModbusThing> candidates;
 };
 
 std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing) {
@@ -642,7 +648,7 @@ ModbusDiscovery::~ModbusDiscovery() {
     stop();
 }
 
-common::Flow<ModbusThing> ModbusDiscovery::discover() const {
+common::Flow<ModbusThing> ModbusDiscovery::scan() const {
     auto observable = rpp::source::create<ModbusThing>(
         [state = _state, options = _options, addresses = _addresses](
             auto&& observer) {
@@ -778,6 +784,25 @@ common::Flow<ModbusThing> ModbusDiscovery::discover() const {
     return common::Flow<ModbusThing>{observable.as_dynamic()};
 }
 
+void ModbusDiscovery::start() {
+    auto state = _state;
+    static_cast<void>(scan().collect(
+        [state](ModbusThing thing) {
+            state->subject.get_observer().on_next(std::move(thing));
+        },
+        [state](std::exception_ptr error) {
+            state->subject.get_observer().on_error(error);
+        },
+        [state] {
+            state->subject.get_observer().on_completed();
+        }));
+}
+
+const common::Flow<ModbusThing>& ModbusDiscovery::candidates()
+    const noexcept {
+    return _state->candidates;
+}
+
 std::vector<std::string> ModbusDiscovery::addressesInCidr(
     const std::string& cidr,
     std::size_t maxHosts) {
@@ -847,7 +872,7 @@ std::optional<std::string> ModbusDiscovery::primaryIpv4Cidr(
     return cidrForAddress(formatIpv4(*address), prefix);
 }
 
-void ModbusDiscovery::stop() noexcept {
+void ModbusDiscovery::stop() {
     std::function<void()> action;
     {
         std::scoped_lock lock{_state->mutex};

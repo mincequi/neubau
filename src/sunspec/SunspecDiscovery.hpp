@@ -1,7 +1,6 @@
 #pragma once
 
-#include "common/ThingDiscovery.hpp"
-#include "common/flow.hpp"
+#include "common/Discovery.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 
 #include <chrono>
@@ -41,7 +40,7 @@ struct SunspecThing {
 
 std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing);
 
-class SunspecDiscovery : public common::ThingDiscovery {
+class SunspecDiscovery : public common::Discovery<SunspecThing> {
 public:
     explicit SunspecDiscovery(SunspecDiscoveryOptions options);
     ~SunspecDiscovery() override;
@@ -49,14 +48,18 @@ public:
     SunspecDiscovery(const SunspecDiscovery&) = delete;
     SunspecDiscovery& operator=(const SunspecDiscovery&) = delete;
 
-    [[nodiscard]] common::Flow<SunspecThing> discover() const;
-    void stop() noexcept override;
+    void start() override;
+    void stop() override;
+    [[nodiscard]] const common::Flow<SunspecThing>& candidates()
+        const noexcept override;
 
     [[nodiscard]] static bool isSunspecSignature(
         const std::vector<std::uint16_t>& registers);
 
 private:
     struct State;
+
+    [[nodiscard]] common::Flow<SunspecThing> scan() const;
 
     std::shared_ptr<State> _state;
     SunspecDiscoveryOptions _options;

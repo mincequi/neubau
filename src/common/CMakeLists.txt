@@ -1,5 +1,6 @@
 add_library(
     neubau_common
+    PortScanner.cpp
     Reactor.cpp
     Timer.cpp
 )

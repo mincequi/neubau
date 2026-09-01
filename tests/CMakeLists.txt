@@ -3,6 +3,11 @@ target_link_libraries(common_flow_test PRIVATE neubau::common)
 
 add_test(NAME common_flow_test COMMAND common_flow_test)
 
+add_executable(port_scanner_test port_scanner_test.cpp)
+target_link_libraries(port_scanner_test PRIVATE neubau::common)
+
+add_test(NAME port_scanner_test COMMAND port_scanner_test)
+
 add_executable(timer_test timer_test.cpp)
 target_link_libraries(timer_test PRIVATE neubau::common)
 

@@ -1,7 +1,6 @@
 #pragma once
 
-#include "common/ThingDiscovery.hpp"
-#include "common/flow.hpp"
+#include "common/Discovery.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyThing.hpp"
 
@@ -10,7 +9,7 @@
 
 namespace neubau::shelly {
 
-class ShellyDiscovery : public common::ThingDiscovery {
+class ShellyDiscovery : public common::Discovery<ShellyThing> {
 public:
     explicit ShellyDiscovery(
         std::chrono::milliseconds timeout = std::chrono::seconds{3});
@@ -19,14 +18,18 @@ public:
     ShellyDiscovery(const ShellyDiscovery&) = delete;
     ShellyDiscovery& operator=(const ShellyDiscovery&) = delete;
 
-    [[nodiscard]] common::Flow<ShellyThing> discover() const;
-    void stop() noexcept override;
+    void start() override;
+    void stop() override;
+    [[nodiscard]] const common::Flow<ShellyThing>& candidates()
+        const noexcept override;
 
     [[nodiscard]] static bool isShellyService(
         const mdns::MdnsService& service);
 
 private:
     struct State;
+
+    [[nodiscard]] common::Flow<ShellyThing> scan() const;
 
     std::shared_ptr<State> _state;
 };

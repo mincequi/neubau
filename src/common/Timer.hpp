@@ -1,28 +1,29 @@
 #pragma once
 
-#include "common/flow.hpp"
+#include "common/ConfigRepository.hpp"
+#include "common/Types.hpp"
 
-#include <chrono>
 #include <memory>
 
 namespace neubau::common {
 
 class Timer {
 public:
-    Timer();
+    explicit Timer(ConfigRepository& repository);
     ~Timer();
 
     Timer(const Timer&) = delete;
     Timer& operator=(const Timer&) = delete;
 
-    [[nodiscard]] Flow<std::chrono::system_clock::time_point>
-    epochAlignedTicks(std::chrono::seconds interval) const;
+    [[nodiscard]] const Flow<TimePoint>& discoveryTicks()
+        const noexcept;
+    [[nodiscard]] const Flow<TimePoint>& thingTicks() const noexcept;
     void stop() noexcept;
 
-    [[nodiscard]] static std::chrono::system_clock::time_point
+    [[nodiscard]] static TimePoint
     nextEpochAlignedTickAfter(
-        std::chrono::system_clock::time_point time,
-        std::chrono::seconds interval);
+        TimePoint time,
+        Seconds interval);
 
 private:
     struct State;

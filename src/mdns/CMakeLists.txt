@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.24)
+
 add_library(neubau_mdns MdnsDiscovery.cpp)
 add_library(neubau::mdns ALIAS neubau_mdns)
 

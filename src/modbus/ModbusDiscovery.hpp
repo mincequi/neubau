@@ -1,7 +1,6 @@
 #pragma once
 
-#include "common/ThingDiscovery.hpp"
-#include "common/flow.hpp"
+#include "common/Discovery.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -55,7 +54,7 @@ readHoldingRegisters(
     std::chrono::milliseconds responseTimeout =
         std::chrono::milliseconds{500});
 
-class ModbusDiscovery : public common::ThingDiscovery {
+class ModbusDiscovery : public common::Discovery<ModbusThing> {
 public:
     explicit ModbusDiscovery(ModbusDiscoveryOptions options);
     ~ModbusDiscovery() override;
@@ -63,8 +62,10 @@ public:
     ModbusDiscovery(const ModbusDiscovery&) = delete;
     ModbusDiscovery& operator=(const ModbusDiscovery&) = delete;
 
-    [[nodiscard]] common::Flow<ModbusThing> discover() const;
-    void stop() noexcept override;
+    void start() override;
+    void stop() override;
+    [[nodiscard]] const common::Flow<ModbusThing>& candidates()
+        const noexcept override;
 
     [[nodiscard]] static std::vector<std::string> addressesInCidr(
         const std::string& cidr,
@@ -77,6 +78,8 @@ public:
 
 private:
     struct State;
+
+    [[nodiscard]] common::Flow<ModbusThing> scan() const;
 
     std::shared_ptr<State> _state;
     ModbusDiscoveryOptions _options;

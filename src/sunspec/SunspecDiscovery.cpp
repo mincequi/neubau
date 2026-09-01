@@ -1,5 +1,7 @@
 #include "sunspec/SunspecDiscovery.hpp"
 
+#include <rpp/subjects/publish_subject.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -20,10 +22,13 @@ namespace neubau::sunspec {
 
 struct SunspecDiscovery::State {
     explicit State(const modbus::ModbusDiscoveryOptions& options)
-        : modbus{std::make_shared<modbus::ModbusDiscovery>(options)} {}
+        : modbus{std::make_shared<modbus::ModbusDiscovery>(options)}
+        , candidates{subject.get_observable().as_dynamic()} {}
 
     std::shared_ptr<modbus::ModbusDiscovery> modbus;
     std::atomic_bool stopRequested{false};
+    rpp::subjects::publish_subject<SunspecThing> subject;
+    common::Flow<SunspecThing> candidates;
 };
 
 namespace {
@@ -329,7 +334,7 @@ SunspecDiscovery::~SunspecDiscovery() {
     stop();
 }
 
-common::Flow<SunspecThing> SunspecDiscovery::discover() const {
+common::Flow<SunspecThing> SunspecDiscovery::scan() const {
     auto observable = rpp::source::create<SunspecThing>(
         [state = _state, options = _options](auto&& observer) {
             using Observer = std::decay_t<decltype(observer)>;
@@ -360,7 +365,7 @@ common::Flow<SunspecThing> SunspecDiscovery::discover() const {
                 void start() {
                     state->stopRequested = false;
                     auto self = this->shared_from_this();
-                    static_cast<void>(state->modbus->discover().collect(
+                    static_cast<void>(state->modbus->candidates().collect(
                         [self](const modbus::ModbusThing& thing) {
                             self->onModbus(thing);
                         },
@@ -372,6 +377,7 @@ common::Flow<SunspecThing> SunspecDiscovery::discover() const {
                             self->sourceCompleted = true;
                             self->maybeComplete();
                         }));
+                    state->modbus->start();
                 }
 
                 void onModbus(const modbus::ModbusThing& modbusThing) {
@@ -428,7 +434,26 @@ common::Flow<SunspecThing> SunspecDiscovery::discover() const {
     return common::Flow<SunspecThing>{observable.as_dynamic()};
 }
 
-void SunspecDiscovery::stop() noexcept {
+void SunspecDiscovery::start() {
+    auto state = _state;
+    static_cast<void>(scan().collect(
+        [state](SunspecThing thing) {
+            state->subject.get_observer().on_next(std::move(thing));
+        },
+        [state](std::exception_ptr error) {
+            state->subject.get_observer().on_error(error);
+        },
+        [state] {
+            state->subject.get_observer().on_completed();
+        }));
+}
+
+const common::Flow<SunspecThing>& SunspecDiscovery::candidates()
+    const noexcept {
+    return _state->candidates;
+}
+
+void SunspecDiscovery::stop() {
     _state->stopRequested = true;
     _state->modbus->stop();
 }

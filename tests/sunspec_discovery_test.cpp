@@ -31,12 +31,13 @@ int main() {
     std::vector<neubau::sunspec::SunspecThing> found;
     std::promise<void> completed;
     auto completion = completed.get_future();
-    discovery.discover().collect(
+    discovery.candidates().collect(
         [&found](const auto& thing) { found.push_back(thing); },
         [&completed](std::exception_ptr error) {
             completed.set_exception(error);
         },
         [&completed] { completed.set_value(); });
+    discovery.start();
     assert(
         completion.wait_for(std::chrono::seconds{2})
         == std::future_status::ready);

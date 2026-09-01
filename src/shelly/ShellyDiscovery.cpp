@@ -3,6 +3,7 @@
 #include "common/Reactor.hpp"
 
 #include <hv/Event.h>
+#include <rpp/subjects/publish_subject.hpp>
 #include <algorithm>
 #include <cctype>
 #include <exception>
@@ -17,10 +18,13 @@ namespace neubau::shelly {
 struct ShellyDiscovery::State {
     explicit State(std::chrono::milliseconds timeout)
         : mdns{std::make_shared<mdns::MdnsDiscovery>()}
-        , timeout{timeout} {}
+        , timeout{timeout}
+        , candidates{subject.get_observable().as_dynamic()} {}
 
     std::shared_ptr<mdns::MdnsDiscovery> mdns;
     std::chrono::milliseconds timeout;
+    rpp::subjects::publish_subject<ShellyThing> subject;
+    common::Flow<ShellyThing> candidates;
 };
 
 namespace {
@@ -97,7 +101,7 @@ ShellyDiscovery::~ShellyDiscovery() {
     stop();
 }
 
-common::Flow<ShellyThing> ShellyDiscovery::discover() const {
+common::Flow<ShellyThing> ShellyDiscovery::scan() const {
     if (!_state) {
         throw std::logic_error("Shelly discovery has been moved from");
     }
@@ -146,7 +150,26 @@ common::Flow<ShellyThing> ShellyDiscovery::discover() const {
     return common::Flow<ShellyThing>{observable.as_dynamic()};
 }
 
-void ShellyDiscovery::stop() noexcept {
+void ShellyDiscovery::start() {
+    auto state = _state;
+    static_cast<void>(scan().collect(
+        [state](ShellyThing thing) {
+            state->subject.get_observer().on_next(std::move(thing));
+        },
+        [state](std::exception_ptr error) {
+            state->subject.get_observer().on_error(error);
+        },
+        [state] {
+            state->subject.get_observer().on_completed();
+        }));
+}
+
+const common::Flow<ShellyThing>& ShellyDiscovery::candidates()
+    const noexcept {
+    return _state->candidates;
+}
+
+void ShellyDiscovery::stop() {
     if (_state) {
         _state->mdns->stop();
     }
