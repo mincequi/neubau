@@ -152,7 +152,7 @@ void MdnsDiscovery::stop() noexcept {
         return;
     }
     _stopped = true;
-    _server.stop(true);
+    _server.closesocket();
     _subject.get_observer().on_completed();
 }
 

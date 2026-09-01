@@ -1,5 +1,6 @@
 #include "common/Discovery.hpp"
 #include "common/PortScanner.hpp"
+#include "common/Thing.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
 #include "sunspec/SunspecDiscovery.hpp"
@@ -22,6 +23,15 @@ static_assert(std::is_base_of_v<
 static_assert(std::is_base_of_v<
               neubau::common::Discovery<neubau::sunspec::SunspecThing>,
               neubau::sunspec::SunspecDiscovery>);
+static_assert(std::is_base_of_v<
+              neubau::common::Thing,
+              neubau::modbus::ModbusThing>);
+static_assert(std::is_base_of_v<
+              neubau::common::Thing,
+              neubau::shelly::ShellyThing>);
+static_assert(std::is_base_of_v<
+              neubau::common::Thing,
+              neubau::sunspec::SunspecThing>);
 static_assert(requires(neubau::common::PortScanner& scanner) {
     { scanner.start() } -> std::same_as<void>;
     { scanner.stop() } -> std::same_as<void>;
@@ -32,6 +42,21 @@ static_assert(requires(neubau::common::PortScanner& scanner) {
 });
 
 int main() {
+    neubau::modbus::ModbusThing thing{
+        .address = "127.0.0.1",
+        .port = 502,
+        .unitId = 1,
+    };
+    thing.setProperty<
+        neubau::common::PropertyKey::thingInterval>(
+        neubau::common::Seconds{15});
+    if (
+        thing.property<
+            neubau::common::PropertyKey::thingInterval>()
+        != neubau::common::Seconds{15}) {
+        return 1;
+    }
+
     neubau::modbus::ModbusDiscovery modbus{
         {.cidrs = {"127.0.0.1/32"}}};
     neubau::sunspec::SunspecDiscovery sunspec{{

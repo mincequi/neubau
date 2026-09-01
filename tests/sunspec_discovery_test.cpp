@@ -1,5 +1,7 @@
 #include "sunspec/SunspecDiscovery.hpp"
 
+#include "common/Reactor.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <future>
@@ -35,11 +37,16 @@ int main() {
         [&found](const auto& thing) { found.push_back(thing); },
         [&completed](std::exception_ptr error) {
             completed.set_exception(error);
+            neubau::common::Reactor::stop();
         },
-        [&completed] { completed.set_value(); });
+        [&completed] {
+            completed.set_value();
+            neubau::common::Reactor::stop();
+        });
     discovery.start();
+    neubau::common::Reactor::run();
     assert(
-        completion.wait_for(std::chrono::seconds{2})
+        completion.wait_for(std::chrono::seconds{0})
         == std::future_status::ready);
     completion.get();
     assert(found.empty());

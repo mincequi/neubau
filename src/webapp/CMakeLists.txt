@@ -15,6 +15,8 @@ target_include_directories(
 )
 target_link_libraries(
     neubau_webapp
+    PUBLIC
+        neubau::common
     PRIVATE
         ${NEUBAU_LIBHV_TARGET}
         neubau::webapp_resources

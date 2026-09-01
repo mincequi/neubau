@@ -1,4 +1,5 @@
 #include "common/ConfigRepository.hpp"
+#include "common/Reactor.hpp"
 #include "common/Timer.hpp"
 #include "common/Types.hpp"
 
@@ -81,12 +82,14 @@ int main() {
     std::optional<TimePoint> discoveryTick;
     std::optional<TimePoint> thingTick;
     std::atomic_size_t tickCount{};
+    std::atomic_bool rejectedInvalid{};
     std::promise<void> emitted;
     const auto collectTick =
         [&](std::optional<TimePoint>& target, TimePoint tick) {
             target = tick;
-            if (++tickCount == 2) {
+            if (++tickCount == 2 && rejectedInvalid) {
                 emitted.set_value();
+                neubau::common::Reactor::stop();
             }
         };
     timer.discoveryTicks().collect(
@@ -97,22 +100,29 @@ int main() {
     repository.setDiscoveryInterval(1s);
     repository.setThingInterval(1s);
 
-    assert(emitted.get_future().wait_for(2s) == std::future_status::ready);
+    TestConfigRepository invalidRepository;
+    Timer invalidTimer{invalidRepository};
+    invalidTimer.discoveryTicks().collect(
+        [](TimePoint) { assert(false); },
+        [&] (std::exception_ptr) {
+            rejectedInvalid = true;
+            if (tickCount == 2) {
+                emitted.set_value();
+                neubau::common::Reactor::stop();
+            }
+        },
+        [] {});
+    invalidRepository.setDiscoveryInterval(Seconds::zero());
+
+    auto completion = emitted.get_future();
+    neubau::common::Reactor::run();
+    assert(
+        completion.wait_for(0s)
+        == std::future_status::ready);
     assert(discoveryTick == thingTick);
     const auto epochSeconds =
         std::chrono::duration_cast<Seconds>(
             discoveryTick->time_since_epoch());
     assert(epochSeconds.count() % Seconds{1}.count() == 0);
     timer.stop();
-
-    TestConfigRepository invalidRepository;
-    Timer invalidTimer{invalidRepository};
-    std::promise<void> rejected;
-    auto rejection = rejected.get_future();
-    invalidTimer.discoveryTicks().collect(
-        [](TimePoint) { assert(false); },
-        [&rejected](std::exception_ptr) { rejected.set_value(); },
-        [] {});
-    invalidRepository.setDiscoveryInterval(Seconds::zero());
-    assert(rejection.wait_for(1s) == std::future_status::ready);
 }

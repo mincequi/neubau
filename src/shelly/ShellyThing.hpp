@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/Thing.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 
 #include <iosfwd>
@@ -7,7 +8,7 @@
 
 namespace neubau::shelly {
 
-class ShellyThing {
+class ShellyThing : public common::Thing {
 public:
     explicit ShellyThing(mdns::MdnsService service);
 

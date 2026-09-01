@@ -3,6 +3,7 @@
 #include <plog/Init.h>
 #include <plog/Log.h>
 
+#include "common/ThingRepository.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
 #include "webapp/WebAppService.hpp"
@@ -10,6 +11,8 @@
 #include <algorithm>
 #include <cctype>
 #include <exception>
+#include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -80,27 +83,43 @@ void logService(const neubau::mdns::MdnsService& service) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main() {
     static plog::ColorConsoleAppender<plog::TxtFormatter> console;
     plog::init(plog::info, &console);
 
-    neubau::mdns::MdnsDiscovery discovery;
-    auto subscription = discovery.services().subscribe(
-        logService,
-        [](std::exception_ptr error) {
-            try {
-                std::rethrow_exception(error);
-            } catch (const std::exception& exception) {
-                PLOGE << "Service discovery failed: " << exception.what();
-            }
-        },
-        [] { PLOGI << "Service discovery stopped"; });
+    neubau::common::ThingRepository things;
+    neubau::webapp::WebAppService webApp{things};
+    std::function<void()> shutdown;
+    const auto result = webApp.run(
+        [&shutdown] {
+            auto discovery =
+                std::make_shared<neubau::mdns::MdnsDiscovery>();
+            auto activeSubscription = discovery->services().subscribe(
+                logService,
+                [](std::exception_ptr error) {
+                    try {
+                        std::rethrow_exception(error);
+                    } catch (const std::exception& exception) {
+                        PLOGE << "Service discovery failed: "
+                              << exception.what();
+                    }
+                },
+                [] { PLOGI << "Service discovery stopped"; });
+            auto subscription =
+                std::make_shared<decltype(activeSubscription)>(
+                    std::move(activeSubscription));
 
-    discovery.discover("_shelly._tcp");
-    discovery.discover("_http._tcp");
-
-    const auto result = neubau::webapp::run_server(argc, argv);
-    subscription.dispose();
-    discovery.stop();
+            discovery->discover("_shelly._tcp");
+            discovery->discover("_http._tcp");
+            shutdown = [
+                           discovery = std::move(discovery),
+                           subscription = std::move(subscription)] {
+                subscription->dispose();
+                discovery->stop();
+            };
+        });
+    if (shutdown) {
+        shutdown();
+    }
     return result;
 }

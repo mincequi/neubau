@@ -65,7 +65,7 @@ private:
 
     rpp::subjects::publish_subject<MdnsService> _subject;
     common::Flow<MdnsService> _services;
-    hv::UdpServer _server;
+    hv::UdpServerEventLoopTmpl<> _server;
     std::map<std::string, PendingService> _discoveredServices;
     std::map<std::string, std::vector<std::string>> _addresses;
     std::map<std::string, MdnsService> _emitted;

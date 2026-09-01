@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/Discovery.hpp"
+#include "common/Thing.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -24,7 +25,7 @@ struct ModbusDiscoveryOptions {
     std::size_t maxHosts{4096};
 };
 
-struct ModbusThing {
+struct ModbusThing : common::Thing {
     std::string address;
     std::uint16_t port{};
     std::uint8_t unitId{};

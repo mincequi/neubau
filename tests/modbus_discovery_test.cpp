@@ -1,5 +1,7 @@
 #include "modbus/ModbusDiscovery.hpp"
 
+#include "common/Reactor.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <future>
@@ -43,40 +45,38 @@ int main() {
     std::vector<neubau::modbus::ModbusThing> found;
     std::promise<void> completed;
     auto completion = completed.get_future();
-    discovery.candidates().collect(
-        [&found](const auto& thing) { found.push_back(thing); },
-        [&completed](std::exception_ptr error) {
-            completed.set_exception(error);
-        },
-        [&completed] { completed.set_value(); });
-    discovery.start();
-    assert(
-        completion.wait_for(std::chrono::seconds{2})
-        == std::future_status::ready);
-    completion.get();
-    assert(found.empty());
-
-    std::promise<void> readFailed;
-    auto readFailure = readFailed.get_future();
     const neubau::modbus::ModbusThing unreachable{
         .address = "127.0.0.1",
         .port = 65000,
         .unitId = 1,
     };
-    neubau::modbus::readHoldingRegisters(
-            unreachable,
-            0,
-            1,
-            std::chrono::milliseconds{10},
-            std::chrono::milliseconds{10})
-            .collect(
-                [](const auto&) { assert(false); },
-                [&readFailed](std::exception_ptr) {
-                    readFailed.set_value();
-                },
-                [] { assert(false); });
+    discovery.candidates().collect(
+        [&found](const auto& thing) { found.push_back(thing); },
+        [&completed](std::exception_ptr error) {
+            completed.set_exception(error);
+            neubau::common::Reactor::stop();
+        },
+        [&completed, &unreachable] {
+            completed.set_value();
+            neubau::modbus::readHoldingRegisters(
+                    unreachable,
+                    0,
+                    1,
+                    std::chrono::milliseconds{10},
+                    std::chrono::milliseconds{10})
+                    .collect(
+                        [](const auto&) { assert(false); },
+                        [](std::exception_ptr) {
+                            neubau::common::Reactor::stop();
+                        },
+                        [] { assert(false); });
+        });
+    discovery.start();
+    neubau::common::Reactor::run();
     assert(
-        readFailure.wait_for(std::chrono::seconds{2})
+        completion.wait_for(std::chrono::seconds{0})
         == std::future_status::ready);
-    readFailure.get();
+    completion.get();
+    assert(found.empty());
+
 }

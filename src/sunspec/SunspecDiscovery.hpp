@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/Discovery.hpp"
+#include "common/Thing.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 
 #include <chrono>
@@ -24,7 +25,7 @@ struct SunspecDiscoveryOptions {
     std::size_t maxRegisterSpan{10000};
 };
 
-struct SunspecThing {
+struct SunspecThing : common::Thing {
     modbus::ModbusThing modbus;
     std::uint16_t baseAddress{};
     std::vector<std::uint16_t> modelIds;

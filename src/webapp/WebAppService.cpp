@@ -1,11 +1,13 @@
 #include "webapp/WebAppService.hpp"
 
-#include <cmrc/cmrc.hpp>
-#include <hv/HttpServer.h>
+#include "common/Reactor.hpp"
 
-#include <cstdlib>
+#include <cmrc/cmrc.hpp>
+#include <hv/WebSocketServer.h>
+
 #include <iostream>
 #include <string>
+#include <utility>
 
 CMRC_DECLARE(neubau_webapp_resources);
 
@@ -18,18 +20,12 @@ std::string load_resource(const char* path) {
     return {file.begin(), file.end()};
 }
 
-int parse_port(int argc, char** argv) {
-    if (argc < 2) {
-        return 8080;
-    }
-
-    const auto requested_port = std::strtol(argv[1], nullptr, 10);
-    return requested_port > 0 ? static_cast<int>(requested_port) : 8080;
-}
-
 } // namespace
 
-int run_server(int argc, char** argv) {
+WebAppService::WebAppService(common::ThingRepository& things)
+    : _things{things} {}
+
+int WebAppService::run(std::function<void()> onStarted) {
     const auto index_html = load_resource("index.html");
 
     hv::HttpService service;
@@ -42,11 +38,34 @@ int run_server(int argc, char** argv) {
         return response->String("ok\n");
     });
 
-    hv::HttpServer server(&service);
-    const auto port = parse_port(argc, argv);
-    server.setPort(port);
+    hv::WebSocketService websocket;
+    websocket.onopen = [](
+                           const WebSocketChannelPtr& channel,
+                           const HttpRequestPtr& request) {
+        if (request->Path() != webSocketPath) {
+            channel->close();
+        }
+    };
+    websocket.onmessage = [](
+                              const WebSocketChannelPtr& channel,
+                              const std::string& message) {
+        channel->send(message);
+    };
 
-    std::cout << "neubau listening on http://127.0.0.1:" << port << '\n';
+    hv::WebSocketServer server{&websocket};
+    server.registerHttpService(&service);
+    server.setPort(serverPort);
+    server.setThreadNum(1);
+    server.onWorkerStart = [&server, onStarted = std::move(onStarted)] {
+        common::Reactor::setLoop(server.loop());
+        if (onStarted) {
+            onStarted();
+        }
+    };
+
+    std::cout << "neubau listening on http://127.0.0.1:"
+              << serverPort << " and ws://127.0.0.1:"
+              << serverPort << webSocketPath << '\n';
     return server.run();
 }
 

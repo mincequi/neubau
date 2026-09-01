@@ -35,6 +35,24 @@ CPMAddPackage(
 )
 
 CPMAddPackage(
+    NAME tomlplusplus
+    GITHUB_REPOSITORY marzer/tomlplusplus
+    VERSION 3.4.0
+    OPTIONS
+        "TOMLPLUSPLUS_BUILD_TESTS OFF"
+        "TOMLPLUSPLUS_BUILD_EXAMPLES OFF"
+)
+
+CPMAddPackage(
+    NAME reflectcpp
+    GITHUB_REPOSITORY getml/reflect-cpp
+    VERSION 0.25.0
+    OPTIONS
+        "REFLECTCPP_JSON OFF"
+        "REFLECTCPP_INSTALL OFF"
+)
+
+CPMAddPackage(
     NAME plog
     GITHUB_REPOSITORY SergiusTheBest/plog
     GIT_TAG 1.1.11

@@ -17,7 +17,8 @@ plog.
 
 The content of `src/webapp/` will become a Flutter application. For now,
 `src/webapp/index.html` is embedded as a placeholder and served by
-`src/webapp/WebAppService.cpp`.
+`src/webapp/WebAppService.cpp`. HTTP content and the echo WebSocket endpoint
+`/ws` share port `8030`.
 
 ## Flow API
 
@@ -74,10 +75,25 @@ timer.thingTicks()
     });
 ```
 
-Timers and network discovery share the libhv reactor exposed by
-`src/common/Reactor.hpp`. mDNS sockets and Modbus TCP clients register
-asynchronous I/O and timeout callbacks on that loop; no discovery class creates
-worker threads or performs blocking network waits.
+The one-worker HTTP server runs its libhv event loop on the main thread and
+registers it through `src/common/Reactor.hpp`. Timers and network discovery use
+that same loop, so HTTP, UDP, TCP, and timer callbacks execute sequentially.
+No application component creates worker threads or performs blocking network
+waits.
+
+## Configuration persistence
+
+`common::Persistence` stores typed properties as TOML in
+`/var/lib/iotic/iotic.conf` using reflected `PropertyKey` names:
+
+```cpp
+neubau::common::Persistence persistence;
+persistence.save<neubau::common::PropertyKey::discoveryInterval>(
+    neubau::common::Seconds{60});
+const auto interval =
+    persistence.restore<
+        neubau::common::PropertyKey::discoveryInterval>();
+```
 
 ## Shelly discovery
 
