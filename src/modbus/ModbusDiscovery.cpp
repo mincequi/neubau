@@ -274,11 +274,7 @@ public:
         , _options{std::move(options)}
         , _unitId{unitId}
         , _result{std::move(result)}
-        , _thing{
-              .address = _address,
-              .port = _options.port,
-              .unitId = _unitId,
-          } {}
+        , _thing{_address, _options.port, _unitId} {}
 
     void start() { requestMei(); }
 
@@ -519,6 +515,23 @@ struct ModbusDiscovery::State {
     rpp::subjects::publish_subject<ModbusThing> subject;
     common::Flow<ModbusThing> candidates;
 };
+
+std::string modbusThingId(
+    std::string_view address,
+    std::uint16_t port,
+    std::uint8_t unitId) {
+    return "modbus://" + std::string{address} + ':'
+        + std::to_string(port) + '/' + std::to_string(unitId);
+}
+
+ModbusThing::ModbusThing(
+    std::string address,
+    std::uint16_t port,
+    std::uint8_t unitId)
+    : Thing{modbusThingId(address, port, unitId)}
+    , address{std::move(address)}
+    , port{port}
+    , unitId{unitId} {}
 
 std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing) {
     stream << "Modbus " << thing.address << ':' << thing.port

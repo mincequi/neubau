@@ -18,22 +18,19 @@ std::string instanceId(const std::string& instanceName) {
     return instanceName.substr(0, separator);
 }
 
+std::string shellyId(const mdns::MdnsService& service) {
+    auto id = txtValue(service, "id");
+    return id.empty() ? instanceId(service.instanceName) : id;
+}
+
 } // namespace
 
 ShellyThing::ShellyThing(mdns::MdnsService service)
-    : _service{std::move(service)}
-    , _id{txtValue(_service, "id")}
+    : Thing{shellyId(service)}
+    , _service{std::move(service)}
     , _model{txtValue(_service, "app")}
     , _generation{txtValue(_service, "gen")}
-    , _firmwareVersion{txtValue(_service, "ver")} {
-    if (_id.empty()) {
-        _id = instanceId(_service.instanceName);
-    }
-}
-
-const std::string& ShellyThing::id() const noexcept {
-    return _id;
-}
+    , _firmwareVersion{txtValue(_service, "ver")} {}
 
 const std::string& ShellyThing::model() const noexcept {
     return _model;

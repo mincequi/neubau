@@ -12,7 +12,6 @@ class ShellyThing : public common::Thing {
 public:
     explicit ShellyThing(mdns::MdnsService service);
 
-    [[nodiscard]] const std::string& id() const noexcept;
     [[nodiscard]] const std::string& model() const noexcept;
     [[nodiscard]] const std::string& generation() const noexcept;
     [[nodiscard]] const std::string& firmwareVersion() const noexcept;
@@ -20,7 +19,6 @@ public:
 
 private:
     mdns::MdnsService _service;
-    std::string _id;
     std::string _model;
     std::string _generation;
     std::string _firmwareVersion;

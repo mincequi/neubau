@@ -14,6 +14,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -57,6 +58,33 @@ std::string decodeString(
         result.pop_back();
     }
     return result;
+}
+
+std::string normalizeIdentityPart(std::string_view value) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (const auto character : value) {
+        const auto value = static_cast<unsigned char>(character);
+        if (value >= 'A' && value <= 'Z') {
+            normalized.push_back(
+                static_cast<char>(value - 'A' + 'a'));
+        } else if ((value >= 'a' && value <= 'z')
+                   || (value >= '0' && value <= '9')) {
+            normalized.push_back(static_cast<char>(value));
+        } else {
+            normalized.push_back('_');
+        }
+    }
+    return normalized;
+}
+
+std::string sunspecThingId(
+    std::string_view manufacturer,
+    std::string_view product,
+    std::string_view serialNumber) {
+    return normalizeIdentityPart(manufacturer) + "__"
+        + normalizeIdentityPart(product) + "__"
+        + normalizeIdentityPart(serialNumber);
 }
 
 using Registers = std::vector<std::uint16_t>;
@@ -192,10 +220,7 @@ private:
                     self->probeBase();
                     return;
                 }
-                self->_thing = SunspecThing{
-                    .modbus = self->_modbusThing,
-                    .baseAddress = baseAddress,
-                };
+                self->_state.baseAddress = baseAddress;
                 self->_cursor =
                     static_cast<std::uint32_t>(baseAddress) + 2;
                 self->readModelHeader();
@@ -214,9 +239,9 @@ private:
         if (_modelIndex >= _options.maxModels
             || _cursor + 1
                 > std::numeric_limits<std::uint16_t>::max()
-            || _cursor - _thing.baseAddress
+            || _cursor - _state.baseAddress
                 > _options.maxRegisterSpan) {
-            complete(_thing);
+            complete();
             return;
         }
 
@@ -225,38 +250,38 @@ private:
             static_cast<std::uint16_t>(_cursor),
             2,
             [self](Registers header) { self->onModelHeader(header); },
-            [self] { self->complete(self->_thing); });
+            [self] { self->complete(); });
     }
 
     void onModelHeader(const Registers& header) {
         const auto modelId = header[0];
         const auto modelLength = header[1];
         if (modelId == endModelId) {
-            _thing.completeModelChain = true;
-            complete(_thing);
+            _state.completeModelChain = true;
+            complete();
             return;
         }
         if (_cursor + 2 + modelLength
                 > std::numeric_limits<std::uint16_t>::max() + 1ULL
-            || _cursor + 2 + modelLength - _thing.baseAddress
+            || _cursor + 2 + modelLength - _state.baseAddress
                 > _options.maxRegisterSpan) {
-            complete(_thing);
+            complete();
             return;
         }
 
-        _thing.modelIds.push_back(modelId);
+        _state.modelIds.push_back(modelId);
         if (modelId == commonModelId && modelLength >= 65) {
             auto self = shared_from_this();
             read(
                 static_cast<std::uint16_t>(_cursor + 2),
                 modelLength,
                 [self, modelLength](Registers common) {
-                    self->_thing.manufacturer =
+                    self->_state.manufacturer =
                         decodeString(common, 0, 16);
-                    self->_thing.model = decodeString(common, 16, 16);
-                    self->_thing.options = decodeString(common, 32, 8);
-                    self->_thing.version = decodeString(common, 40, 8);
-                    self->_thing.serialNumber =
+                    self->_state.model = decodeString(common, 16, 16);
+                    self->_state.options = decodeString(common, 32, 8);
+                    self->_state.version = decodeString(common, 40, 8);
+                    self->_state.serialNumber =
                         decodeString(common, 48, 16);
                     self->advance(modelLength);
                 },
@@ -279,11 +304,36 @@ private:
         }
     }
 
+    void complete() {
+        complete(SunspecThing{
+            _modbusThing,
+            _state.baseAddress,
+            std::move(_state.modelIds),
+            _state.completeModelChain,
+            std::move(_state.manufacturer),
+            std::move(_state.model),
+            std::move(_state.options),
+            std::move(_state.version),
+            std::move(_state.serialNumber),
+        });
+    }
+
+    struct ProbeState {
+        std::uint16_t baseAddress{};
+        std::vector<std::uint16_t> modelIds;
+        bool completeModelChain{};
+        std::string manufacturer;
+        std::string model;
+        std::string options;
+        std::string version;
+        std::string serialNumber;
+    };
+
     modbus::ModbusThing _modbusThing;
     SunspecDiscoveryOptions _options;
     const std::atomic_bool& _stopRequested;
     ProbeResult _result;
-    SunspecThing _thing;
+    ProbeState _state;
     std::size_t _baseIndex{};
     std::size_t _modelIndex{};
     std::uint32_t _cursor{};
@@ -298,6 +348,27 @@ void validateOptions(const SunspecDiscoveryOptions& options) {
 }
 
 } // namespace
+
+SunspecThing::SunspecThing(
+    modbus::ModbusThing modbus,
+    std::uint16_t baseAddress,
+    std::vector<std::uint16_t> modelIds,
+    bool completeModelChain,
+    std::string manufacturer,
+    std::string model,
+    std::string options,
+    std::string version,
+    std::string serialNumber)
+    : Thing{sunspecThingId(manufacturer, model, serialNumber)}
+    , modbus{std::move(modbus)}
+    , baseAddress{baseAddress}
+    , modelIds{std::move(modelIds)}
+    , completeModelChain{completeModelChain}
+    , manufacturer{std::move(manufacturer)}
+    , model{std::move(model)}
+    , options{std::move(options)}
+    , version{std::move(version)}
+    , serialNumber{std::move(serialNumber)} {}
 
 std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing) {
     stream << "SunSpec " << thing.modbus.address << ':'

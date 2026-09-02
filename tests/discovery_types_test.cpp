@@ -42,11 +42,7 @@ static_assert(requires(neubau::common::PortScanner& scanner) {
 });
 
 int main() {
-    neubau::modbus::ModbusThing thing{
-        .address = "127.0.0.1",
-        .port = 502,
-        .unitId = 1,
-    };
+    neubau::modbus::ModbusThing thing{"127.0.0.1", 502, 1};
     thing.setProperty<
         neubau::common::PropertyKey::thingInterval>(
         neubau::common::Seconds{15});

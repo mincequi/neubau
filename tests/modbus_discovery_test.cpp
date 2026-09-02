@@ -25,6 +25,10 @@ int main() {
         ModbusDiscovery::cidrForAddress("192.168.1.42", 24)
         == "192.168.1.0/24");
 
+    const neubau::modbus::ModbusThing modbus{
+        "192.0.2.10", 502, 7};
+    assert(modbus.id() == "modbus://192.0.2.10:502/7");
+
     bool rejectedLargeRange = false;
     try {
         static_cast<void>(
@@ -46,10 +50,7 @@ int main() {
     std::promise<void> completed;
     auto completion = completed.get_future();
     const neubau::modbus::ModbusThing unreachable{
-        .address = "127.0.0.1",
-        .port = 65000,
-        .unitId = 1,
-    };
+        "127.0.0.1", 65000, 1};
     discovery.candidates().collect(
         [&found](const auto& thing) { found.push_back(thing); },
         [&completed](std::exception_ptr error) {

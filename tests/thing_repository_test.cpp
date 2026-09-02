@@ -26,7 +26,7 @@ int main() {
     assert(snapshots.size() == 1);
     assert(snapshots.back().empty());
 
-    auto thing = std::make_shared<neubau::common::Thing>();
+    auto thing = std::make_shared<neubau::common::Thing>("test-thing");
     repository.add(thing);
 
     assert(snapshots.size() == 2);

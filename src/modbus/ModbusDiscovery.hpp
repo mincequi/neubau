@@ -11,6 +11,7 @@
 #include <optional>
 #include <iosfwd>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace neubau::modbus {
@@ -25,7 +26,17 @@ struct ModbusDiscoveryOptions {
     std::size_t maxHosts{4096};
 };
 
+[[nodiscard]] std::string modbusThingId(
+    std::string_view address,
+    std::uint16_t port,
+    std::uint8_t unitId);
+
 struct ModbusThing : common::Thing {
+    ModbusThing(
+        std::string address,
+        std::uint16_t port,
+        std::uint8_t unitId);
+
     std::string address;
     std::uint16_t port{};
     std::uint8_t unitId{};

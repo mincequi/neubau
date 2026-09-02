@@ -20,6 +20,19 @@ int main() {
         defaults.modbus.unitIds
         == std::vector<std::uint8_t>({1, 126, 128}));
 
+    const neubau::sunspec::SunspecThing sunspec{
+        neubau::modbus::ModbusThing{"192.0.2.10", 502, 7},
+        40000,
+        {},
+        true,
+        "Acme Co.",
+        "Inverter/1",
+        {},
+        {},
+        "SN 42",
+    };
+    assert(sunspec.id() == "acme_co___inverter_1__sn_42");
+
     SunspecDiscovery discovery{SunspecDiscoveryOptions{
         .modbus = {
             .cidrs = {"127.0.0.1/32"},

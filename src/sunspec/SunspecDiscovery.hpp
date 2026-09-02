@@ -26,6 +26,17 @@ struct SunspecDiscoveryOptions {
 };
 
 struct SunspecThing : common::Thing {
+    SunspecThing(
+        modbus::ModbusThing modbus,
+        std::uint16_t baseAddress,
+        std::vector<std::uint16_t> modelIds,
+        bool completeModelChain,
+        std::string manufacturer,
+        std::string model,
+        std::string options,
+        std::string version,
+        std::string serialNumber);
+
     modbus::ModbusThing modbus;
     std::uint16_t baseAddress{};
     std::vector<std::uint16_t> modelIds;

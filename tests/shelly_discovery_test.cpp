@@ -25,6 +25,9 @@ int main() {
 
     const neubau::shelly::ShellyThing thing{service};
     assert(thing.id() == "shellyplus1pm-aabbcc");
+    assert(
+        static_cast<const neubau::common::Thing&>(thing).id()
+        == "shellyplus1pm-aabbcc");
     assert(thing.model() == "Plus1PM");
     assert(thing.generation() == "2");
     assert(thing.firmwareVersion() == "1.0.0");
