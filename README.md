@@ -210,9 +210,12 @@ only `{0x5375, 0x6e53, 1, 65-or-66}`. A valid header leads to Common Model 1
 metadata and traversal of the complete model chain, which must end with the
 `0xffff` terminator. Repeated model IDs are retained as separate ordered
 locations, and unknown model IDs remain visible as locations even without a
-parser. A transport closure replaces the closed connection with a new session
-for that endpoint and continues at the next untried priority ID. A completed
-candidate has a stable ID:
+parser. During unit-header probing, a transport closure replaces the closed
+connection with a new session for that endpoint and continues at the next
+untried priority ID. Once a valid header selects a unit, any closure or other
+failure while reading Common Model data or traversing/chunking the model chain
+completes that host scan without a candidate; it neither replaces the session
+nor restarts unit probing. A completed candidate has a stable ID:
 
 ```text
 normalize(manufacturer) + "_" + normalize(product) + "_" + normalize(serial)

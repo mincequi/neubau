@@ -93,9 +93,12 @@ claims. The scanner advances through the ordered unit IDs only until it emits
 the first fully valid, terminated chain, and reaches all 247 only when no
 header is accepted. It also completes without an emission when a selected
 header's Common Model or model chain cannot complete. One viable
-`ModbusSession` reuses its TCP connection, while a transport-closed session is
-replaced and scanning continues at the next untried priority ID. The README now
-states each of these behaviors explicitly.
+`ModbusSession` reuses its TCP connection. Only a session closed during
+unit-header probing is replaced, with scanning continuing at the next untried
+priority ID. After a valid header selects a unit, a closure or other failure
+while reading Common Model data or traversing/chunking the model chain completes
+that host scan without a candidate and neither replaces the session nor restarts
+unit probing. The README now states each of these behaviors explicitly.
 
 The adapter callback additions are coverage-only: RPP's publish subject already
 delivers one terminal event and ignores later terminal events. The strengthened
