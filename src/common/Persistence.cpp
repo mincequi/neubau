@@ -22,6 +22,12 @@ struct Persistence::State {
 
 namespace {
 
+void validateThingId(std::string_view id) {
+    if (id.empty()) {
+        throw std::invalid_argument("thing id must not be empty");
+    }
+}
+
 toml::table readProperties(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) {
         return {};
@@ -133,6 +139,58 @@ Persistence::Persistence(std::filesystem::path path)
 }
 
 Persistence::~Persistence() = default;
+
+std::optional<std::string> Persistence::restoreThingName(
+    std::string_view id) const {
+    validateThingId(id);
+
+    std::scoped_lock lock{_state->mutex};
+    const auto properties = readProperties(_state->path);
+    const auto* things = properties.get_as<toml::table>("things");
+    if (things == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto* thing = things->get_as<toml::table>(id);
+    if (thing == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto* name = thing->get("name");
+    if (name == nullptr) {
+        return std::nullopt;
+    }
+    if (!name->is_string()) {
+        throw std::invalid_argument(
+            "persisted thing name must be a string");
+    }
+
+    return *name->value<std::string>();
+}
+
+void Persistence::saveThingName(
+    std::string_view id,
+    std::string_view name) {
+    validateThingId(id);
+
+    std::scoped_lock lock{_state->mutex};
+    auto properties = readProperties(_state->path);
+
+    auto* things = properties.get_as<toml::table>("things");
+    if (things == nullptr) {
+        properties.insert_or_assign("things", toml::table{});
+        things = properties.get_as<toml::table>("things");
+    }
+
+    auto* thing = things->get_as<toml::table>(id);
+    if (thing == nullptr) {
+        things->insert_or_assign(std::string{id}, toml::table{});
+        thing = things->get_as<toml::table>(id);
+    }
+    thing->insert_or_assign("name", std::string{name});
+
+    writeProperties(_state->path, properties);
+}
 
 std::optional<detail::StoredPropertyValue> Persistence::read(
     PropertyKey key) const {

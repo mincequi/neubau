@@ -43,6 +43,13 @@ public:
     Persistence(const Persistence&) = delete;
     Persistence& operator=(const Persistence&) = delete;
 
+    [[nodiscard]] std::optional<std::string>
+    restoreThingName(std::string_view id) const;
+
+    void saveThingName(
+        std::string_view id,
+        std::string_view name);
+
     template<PropertyKey Key, typename Value>
         requires std::same_as<
             std::remove_cvref_t<Value>,
