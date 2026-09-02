@@ -74,8 +74,9 @@ constexpr std::array<std::uint8_t, 247> unitIds{
 
 [[nodiscard]] bool isSunspecHeader(
     const std::vector<std::uint16_t>& registers) {
-    return registers.size() == 4 && registers[0] == 0x5375
-        && registers[1] == 0x6e53 && registers[2] == 1
+    return registers.size() == 4
+        && SunspecDiscovery::isSunspecSignature(registers)
+        && registers[2] == 1
         && (registers[3] == 65 || registers[3] == 66);
 }
 

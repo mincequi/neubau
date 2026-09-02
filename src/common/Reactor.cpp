@@ -11,6 +11,11 @@ hv::EventLoopPtr& reactorLoop() {
     return loop;
 }
 
+bool& reactorHasRun() {
+    static bool hasRun{};
+    return hasRun;
+}
+
 } // namespace
 
 hv::EventLoopPtr Reactor::loop() {
@@ -19,6 +24,10 @@ hv::EventLoopPtr Reactor::loop() {
         loop = std::make_shared<hv::EventLoop>();
     }
     return loop;
+}
+
+bool Reactor::hasRun() noexcept {
+    return reactorHasRun();
 }
 
 void Reactor::setLoop(hv::EventLoopPtr loop) {
@@ -33,6 +42,7 @@ void Reactor::setLoop(hv::EventLoopPtr loop) {
 }
 
 void Reactor::run() {
+    reactorHasRun() = true;
     loop()->run();
 }
 

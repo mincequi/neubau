@@ -1,338 +1,378 @@
 #include "sunspec/SunspecDiscovery.hpp"
-#include "sunspec/SunspecIdentity.hpp"
 
+#include "common/PortScanner.hpp"
+#include "common/Reactor.hpp"
+#include "modbus/ModbusDiscovery.hpp"
+#include "sunspec/SunspecIdentity.hpp"
+#include "sunspec/SunspecScanner.hpp"
+
+#include <rpp/rpp.hpp>
 #include <rpp/subjects/publish_subject.hpp>
 
-#include <algorithm>
-#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <functional>
-#include <limits>
-#include <map>
 #include <memory>
-#include <ostream>
+#include <optional>
 #include <set>
-#include <span>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 namespace neubau::sunspec {
-
-struct SunspecDiscovery::State {
-    explicit State(const modbus::ModbusDiscoveryOptions& options)
-        : modbus{std::make_shared<modbus::ModbusDiscovery>(options)}
-        , candidates{subject.get_observable().as_dynamic()} {}
-
-    std::shared_ptr<modbus::ModbusDiscovery> modbus;
-    std::atomic_bool stopRequested{false};
-    rpp::subjects::publish_subject<SunspecThing> subject;
-    common::Flow<SunspecThing> candidates;
-};
-
 namespace {
 
-constexpr std::uint16_t commonModelId{1};
-constexpr std::uint16_t endModelId{0xffff};
-
-using Registers = std::vector<std::uint16_t>;
-using ReadSuccess = std::function<void(Registers)>;
-using ReadFailure = std::function<void()>;
-
-class RegisterReader : public std::enable_shared_from_this<RegisterReader> {
-public:
-    RegisterReader(
-        modbus::ModbusThing thing,
-        modbus::ModbusDiscoveryOptions options,
-        std::uint16_t startAddress,
-        std::size_t registerCount,
-        const std::atomic_bool& stopRequested,
-        ReadSuccess success,
-        ReadFailure failure)
-        : _thing{std::move(thing)}
-        , _options{std::move(options)}
-        , _nextAddress{startAddress}
-        , _remaining{registerCount}
-        , _stopRequested{stopRequested}
-        , _success{std::move(success)}
-        , _failure{std::move(failure)} {
-        _registers.reserve(registerCount);
-    }
-
-    void start() { next(); }
-
-private:
-    void next() {
-        if (_stopRequested.load()) {
-            fail();
-            return;
-        }
-        if (_remaining == 0) {
-            auto success = std::move(_success);
-            _failure = nullptr;
-            if (success) {
-                success(std::move(_registers));
-            }
-            return;
-        }
-
-        const auto chunkSize =
-            std::min<std::size_t>(125, _remaining);
-        auto self = shared_from_this();
-        static_cast<void>(
-            modbus::readHoldingRegisters(
-                _thing,
-                _nextAddress,
-                static_cast<std::uint16_t>(chunkSize),
-                _options.connectTimeout,
-                _options.responseTimeout)
-                .collect(
-                    [self](Registers registers) {
-                        self->_registers.insert(
-                            self->_registers.end(),
-                            registers.begin(),
-                            registers.end());
-                        self->_nextAddress = static_cast<std::uint16_t>(
-                            self->_nextAddress + registers.size());
-                        self->_remaining -= registers.size();
-                    },
-                    [self](std::exception_ptr) { self->fail(); },
-                    [self] { self->next(); }));
-    }
-
-    void fail() {
-        auto failure = std::move(_failure);
-        _success = nullptr;
-        if (failure) {
-            failure();
-        }
-    }
-
-    modbus::ModbusThing _thing;
-    modbus::ModbusDiscoveryOptions _options;
-    std::uint16_t _nextAddress;
-    std::size_t _remaining;
-    const std::atomic_bool& _stopRequested;
-    ReadSuccess _success;
-    ReadFailure _failure;
-    Registers _registers;
-};
-
-using ProbeResult = std::function<void(std::optional<SunspecThing>)>;
-
-class Probe : public std::enable_shared_from_this<Probe> {
-public:
-    Probe(
-        modbus::ModbusThing thing,
-        SunspecDiscoveryOptions options,
-        const std::atomic_bool& stopRequested,
-        ProbeResult result)
-        : _modbusThing{std::move(thing)}
-        , _options{std::move(options)}
-        , _stopRequested{stopRequested}
-        , _result{std::move(result)} {}
-
-    void start() { probeBase(); }
-
-private:
-    void read(
-        std::uint16_t address,
-        std::size_t count,
-        ReadSuccess success,
-        ReadFailure failure) {
-        auto reader = std::make_shared<RegisterReader>(
-            _modbusThing,
-            _options.modbus,
-            address,
-            count,
-            _stopRequested,
-            std::move(success),
-            std::move(failure));
-        reader->start();
-    }
-
-    void probeBase() {
-        if (_stopRequested.load()
-            || _baseIndex >= _options.baseAddresses.size()) {
-            complete(std::nullopt);
-            return;
-        }
-        const auto baseAddress = _options.baseAddresses[_baseIndex];
-        auto self = shared_from_this();
-        read(
-            baseAddress,
-            2,
-            [self, baseAddress](Registers signature) {
-                if (!SunspecDiscovery::isSunspecSignature(signature)) {
-                    ++self->_baseIndex;
-                    self->probeBase();
-                    return;
-                }
-                self->_state.baseAddress = baseAddress;
-                self->_cursor =
-                    static_cast<std::uint32_t>(baseAddress) + 2;
-                self->readModelHeader();
-            },
-            [self] {
-                ++self->_baseIndex;
-                self->probeBase();
-            });
-    }
-
-    void readModelHeader() {
-        if (_stopRequested.load()) {
-            complete(std::nullopt);
-            return;
-        }
-        if (_modelIndex >= _options.maxModels
-            || _cursor + 1
-                > std::numeric_limits<std::uint16_t>::max()
-            || _cursor - _state.baseAddress
-                > _options.maxRegisterSpan) {
-            complete(std::nullopt);
-            return;
-        }
-
-        auto self = shared_from_this();
-        read(
-            static_cast<std::uint16_t>(_cursor),
-            2,
-            [self](Registers header) { self->onModelHeader(header); },
-            [self] { self->complete(std::nullopt); });
-    }
-
-    void onModelHeader(const Registers& header) {
-        if (header.size() != 2) {
-            complete(std::nullopt);
-            return;
-        }
-        const auto modelId = header[0];
-        const auto modelLength = header[1];
-        if (modelId == endModelId) {
-            if (modelLength != 0) {
-                complete(std::nullopt);
-                return;
-            }
-            complete();
-            return;
-        }
-        if (_cursor + 2 + modelLength
-                > std::numeric_limits<std::uint16_t>::max() + 1ULL
-            || _cursor + 2 + modelLength - _state.baseAddress
-                > _options.maxRegisterSpan) {
-            complete(std::nullopt);
-            return;
-        }
-
-        const auto instance = _state.instances[modelId]++;
-        if (instance > std::numeric_limits<std::uint16_t>::max()) {
-            complete(std::nullopt);
-            return;
-        }
-        _state.modelLocations.push_back({
-            modelId,
-            static_cast<std::uint16_t>(instance),
-            static_cast<std::uint16_t>(_cursor + 2),
-            modelLength,
-        });
-        if (modelId == commonModelId && modelLength >= 65) {
-            auto self = shared_from_this();
-            read(
-                static_cast<std::uint16_t>(_cursor + 2),
-                modelLength,
-                [self, modelLength](Registers common) {
-                    if (common.size() != modelLength) {
-                        self->complete(std::nullopt);
-                        return;
-                    }
-                    const auto values =
-                        std::span<const std::uint16_t>{common};
-                    self->_state.manufacturer =
-                        decodeSunSpecString(values.subspan(0, 16));
-                    self->_state.model =
-                        decodeSunSpecString(values.subspan(16, 16));
-                    self->_state.options =
-                        decodeSunSpecString(values.subspan(32, 8));
-                    self->_state.version =
-                        decodeSunSpecString(values.subspan(40, 8));
-                    self->_state.serialNumber =
-                        decodeSunSpecString(values.subspan(48, 16));
-                    self->_state.commonModelDecoded = true;
-                    self->advance(modelLength);
-                },
-                [self] { self->complete(std::nullopt); });
-            return;
-        }
-        advance(modelLength);
-    }
-
-    void advance(std::uint16_t modelLength) {
-        _cursor += 2 + modelLength;
-        ++_modelIndex;
-        readModelHeader();
-    }
-
-    void complete(std::optional<SunspecThing> thing) {
-        auto result = std::move(_result);
-        if (result) {
-            result(std::move(thing));
-        }
-    }
-
-    void complete() {
-        if (!_state.commonModelDecoded) {
-            complete(std::nullopt);
-            return;
-        }
-        complete(SunspecThing{
-            {_modbusThing.address, _modbusThing.port},
-            _modbusThing.unitId,
-            _state.baseAddress,
-            std::move(_state.modelLocations),
-            std::move(_state.manufacturer),
-            std::move(_state.model),
-            std::move(_state.options),
-            std::move(_state.version),
-            std::move(_state.serialNumber),
-        });
-    }
-
-    struct ProbeState {
-        std::uint16_t baseAddress{};
-        std::vector<ModelLocation> modelLocations;
-        std::map<std::uint16_t, std::uint32_t> instances;
-        bool commonModelDecoded{};
-        std::string manufacturer;
-        std::string model;
-        std::string options;
-        std::string version;
-        std::string serialNumber;
-    };
-
-    modbus::ModbusThing _modbusThing;
-    SunspecDiscoveryOptions _options;
-    const std::atomic_bool& _stopRequested;
-    ProbeResult _result;
-    ProbeState _state;
-    std::size_t _baseIndex{};
-    std::size_t _modelIndex{};
-    std::uint32_t _cursor{};
-};
-
 void validateOptions(const SunspecDiscoveryOptions& options) {
-    if (options.baseAddresses.empty() || options.maxModels == 0
-        || options.maxRegisterSpan < 4) {
+    if (options.modbus.cidrs.empty()) {
         throw std::invalid_argument(
-            "SunSpec discovery limits and base addresses must be non-empty");
+            "SunSpec discovery requires at least one IPv4 CIDR");
+    }
+    if (options.modbus.port == 0 || options.modbus.maxHosts == 0
+        || options.modbus.maxConcurrency == 0
+        || options.modbus.connectTimeout <= std::chrono::milliseconds::zero()
+        || options.modbus.responseTimeout
+            <= std::chrono::milliseconds::zero()
+        || options.maxModels == 0 || options.maxRegisterSpan < 4) {
+        throw std::invalid_argument("SunSpec discovery options are invalid");
     }
 }
 
+std::vector<std::string> configuredAddresses(
+    const SunspecDiscoveryOptions& options) {
+    std::set<std::string> addresses;
+    for (const auto& cidr : options.modbus.cidrs) {
+        for (auto address : modbus::ModbusDiscovery::addressesInCidr(
+                 cidr,
+                 options.modbus.maxHosts)) {
+            addresses.insert(std::move(address));
+        }
+        if (addresses.size() > options.modbus.maxHosts) {
+            throw std::invalid_argument(
+                "configured IPv4 CIDRs exceed the host limit");
+        }
+    }
+    return {addresses.begin(), addresses.end()};
+}
+
 } // namespace
+
+struct SunspecDiscovery::State {
+    State(
+        SunspecDiscoveryOptions discoveryOptions,
+        std::vector<std::string> discoveryAddresses,
+        PortScannerFactory discoveryPortScannerFactory)
+        : options{std::move(discoveryOptions)}
+        , addresses{std::move(discoveryAddresses)}
+        , portScannerFactory{std::move(discoveryPortScannerFactory)}
+        , candidates{subject.get_observable().as_dynamic()} {}
+
+    SunspecDiscoveryOptions options;
+    std::vector<std::string> addresses;
+    PortScannerFactory portScannerFactory;
+    rpp::subjects::publish_subject<SunspecThing> subject;
+    common::Flow<SunspecThing> candidates;
+    std::shared_ptr<Run> run;
+    bool started{};
+    bool stopping{};
+    bool terminal{};
+    bool loopEntered{};
+};
+
+class SunspecDiscovery::Run
+    : public std::enable_shared_from_this<SunspecDiscovery::Run> {
+public:
+    explicit Run(std::shared_ptr<State> state)
+        : _state{std::move(state)} {}
+
+    void start() {
+        const auto loop = common::Reactor::loop();
+        if (loop->isRunning()) {
+            if (!loop->isInLoopThread()) {
+                throw std::logic_error(
+                    "SunSpec discovery must start on the Reactor loop");
+            }
+            startInLoop();
+            return;
+        }
+
+        const auto self = shared_from_this();
+        loop->queueInLoop([self] { self->startInLoop(); });
+    }
+
+    void stop() {
+        const auto loop = common::Reactor::loop();
+        if (!loop->isRunning() || !loop->isInLoopThread()) {
+            throw std::logic_error(
+                "SunSpec discovery must stop on the Reactor loop");
+        }
+        stopInLoop();
+    }
+
+private:
+    struct EndpointScan {
+        modbus::ModbusEndpoint endpoint;
+        std::vector<std::shared_ptr<modbus::ModbusSession>> sessions;
+        std::shared_ptr<SunspecScanner> scanner;
+        std::shared_ptr<SunspecScanControl> control;
+        std::optional<rpp::composite_disposable_wrapper> subscription;
+        bool emitted{};
+        bool completed{};
+    };
+
+    void startInLoop() {
+        const auto loop = common::Reactor::loop();
+        if (!loop->isRunning() || !loop->isInLoopThread()) {
+            throw std::logic_error(
+                "SunSpec discovery must run on the Reactor loop");
+        }
+
+        _state->loopEntered = true;
+        if (_state->terminal || _state->stopping) {
+            complete();
+            return;
+        }
+
+        try {
+            _portScanner = _state->portScannerFactory(
+                common::PortScannerOptions{
+                    .addresses = _state->addresses,
+                    .ports = {_state->options.modbus.port},
+                    .connectTimeout =
+                        _state->options.modbus.connectTimeout,
+                    .maxConcurrency =
+                        _state->options.modbus.maxConcurrency,
+                });
+            if (!_portScanner) {
+                throw std::logic_error(
+                    "SunSpec port scanner factory returned null");
+            }
+            const auto weak = weak_from_this();
+            _portSubscription.emplace(
+                _portScanner->candidates().subscribe(
+                    [weak](const common::OpenPort& endpoint) {
+                        if (const auto self = weak.lock()) {
+                            self->openEndpoint(endpoint);
+                        }
+                    },
+                    [weak](std::exception_ptr error) {
+                        if (const auto self = weak.lock()) {
+                            self->fail(std::move(error));
+                        }
+                    },
+                    [weak] {
+                        if (const auto self = weak.lock()) {
+                            self->portsCompleted();
+                        }
+                    }));
+            _portScanner->start();
+        } catch (...) {
+            fail(std::current_exception());
+        }
+    }
+
+    [[nodiscard]] std::shared_ptr<modbus::ModbusSession> createSession(
+        const std::shared_ptr<EndpointScan>& endpoint) {
+        if (_stopping || _failing || _state->terminal) {
+            return nullptr;
+        }
+        auto session = std::make_shared<modbus::ModbusSession>(
+            endpoint->endpoint,
+            _state->options.modbus.connectTimeout,
+            _state->options.modbus.responseTimeout);
+        endpoint->sessions.push_back(session);
+        return session;
+    }
+
+    void openEndpoint(const common::OpenPort& openPort) {
+        if (_stopping || _failing || _state->terminal) {
+            return;
+        }
+
+        try {
+            auto endpoint = std::make_shared<EndpointScan>();
+            endpoint->endpoint = {
+                .address = openPort.address,
+                .port = openPort.port,
+            };
+            const auto session = createSession(endpoint);
+            if (!session) {
+                return;
+            }
+            const auto weak = weak_from_this();
+            const auto weakEndpoint = std::weak_ptr<EndpointScan>{endpoint};
+            endpoint->scanner = std::make_shared<SunspecScanner>(
+                session,
+                [weak, weakEndpoint] {
+                    const auto self = weak.lock();
+                    const auto endpoint = weakEndpoint.lock();
+                    return self && endpoint
+                        ? self->createSession(endpoint)
+                        : std::shared_ptr<modbus::ModbusSession>{};
+                },
+                _state->options);
+            endpoint->control = std::make_shared<SunspecScanControl>();
+            _endpoints.push_back(endpoint);
+            endpoint->subscription.emplace(endpoint->scanner->scan(
+                endpoint->control)
+                                               .subscribe(
+                                                   [weak, endpoint](
+                                                       SunspecThing thing) {
+                                                       if (const auto self =
+                                                               weak.lock()) {
+                                                           self->candidate(
+                                                               endpoint,
+                                                               std::move(thing));
+                                                       }
+                                                   },
+                                                   [weak, endpoint](
+                                                       std::exception_ptr error) {
+                                                       if (const auto self =
+                                                               weak.lock()) {
+                                                           self->scannerFailed(
+                                                               endpoint,
+                                                               std::move(error));
+                                                       }
+                                                   },
+                                                   [weak, endpoint] {
+                                                       if (const auto self =
+                                                               weak.lock()) {
+                                                           self->scannerCompleted(
+                                                               endpoint);
+                                                       }
+                                                   }));
+        } catch (...) {
+            fail(std::current_exception());
+        }
+    }
+
+    void candidate(
+        const std::shared_ptr<EndpointScan>& endpoint,
+        SunspecThing thing) {
+        if (_stopping || _failing || _state->terminal || endpoint->emitted) {
+            return;
+        }
+        endpoint->emitted = true;
+        _state->subject.get_observer().on_next(std::move(thing));
+    }
+
+    void scannerFailed(
+        const std::shared_ptr<EndpointScan>& endpoint,
+        std::exception_ptr error) {
+        if (_stopping || _failing || _state->terminal) {
+            scannerCompleted(endpoint);
+            return;
+        }
+        fail(std::move(error));
+    }
+
+    void scannerCompleted(const std::shared_ptr<EndpointScan>& endpoint) {
+        if (endpoint->completed) {
+            return;
+        }
+        endpoint->completed = true;
+        closeSessions(endpoint);
+        if (!_failing) {
+            maybeComplete();
+        }
+    }
+
+    void portsCompleted() {
+        _portsCompleted = true;
+        maybeComplete();
+    }
+
+    void closeSessions(const std::shared_ptr<EndpointScan>& endpoint) {
+        for (const auto& session : endpoint->sessions) {
+            if (session && !session->isClosed()) {
+                session->close();
+            }
+        }
+    }
+
+    void cancelAndCloseEndpoints() {
+        for (const auto& endpoint : _endpoints) {
+            if (endpoint->control) {
+                endpoint->control->cancel();
+            }
+        }
+        for (const auto& endpoint : _endpoints) {
+            closeSessions(endpoint);
+        }
+    }
+
+    void stopInLoop() {
+        if (_stopping || _failing || _state->terminal) {
+            return;
+        }
+        _stopping = true;
+        cancelAndCloseEndpoints();
+        if (_portScanner) {
+            _portScanner->stop();
+        } else {
+            complete();
+        }
+    }
+
+    void maybeComplete() {
+        if (_failing || _state->terminal || !_portsCompleted) {
+            return;
+        }
+        for (const auto& endpoint : _endpoints) {
+            if (!endpoint->completed) {
+                return;
+            }
+        }
+        complete();
+    }
+
+    void complete() {
+        if (_failing || _state->terminal) {
+            return;
+        }
+        for (const auto& endpoint : _endpoints) {
+            closeSessions(endpoint);
+        }
+        _state->terminal = true;
+        _state->subject.get_observer().on_completed();
+        releaseResources();
+    }
+
+    void fail(std::exception_ptr error) {
+        if (_failing || _state->terminal) {
+            return;
+        }
+        _failing = true;
+        _stopping = true;
+        cancelAndCloseEndpoints();
+        if (_portScanner) {
+            _portScanner->stop();
+        }
+        _state->terminal = true;
+        _state->subject.get_observer().on_error(std::move(error));
+        releaseResources();
+    }
+
+    void releaseResources() {
+        _portSubscription.reset();
+        _portScanner.reset();
+        for (const auto& endpoint : _endpoints) {
+            endpoint->subscription.reset();
+            endpoint->control.reset();
+            endpoint->scanner.reset();
+            endpoint->sessions.clear();
+        }
+    }
+
+    std::shared_ptr<State> _state;
+    std::shared_ptr<common::Discovery<common::OpenPort>> _portScanner;
+    std::optional<rpp::composite_disposable_wrapper> _portSubscription;
+    std::vector<std::shared_ptr<EndpointScan>> _endpoints;
+    bool _portsCompleted{};
+    bool _stopping{};
+    bool _failing{};
+};
 
 SunspecThing::SunspecThing(
     modbus::ModbusEndpoint endpoint,
@@ -393,137 +433,74 @@ std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing) {
 }
 
 SunspecDiscovery::SunspecDiscovery(SunspecDiscoveryOptions options)
-    : _state{std::make_shared<State>(options.modbus)}
-    , _options{std::move(options)} {
-    validateOptions(_options);
+    : SunspecDiscovery(
+          std::move(options),
+          [](common::PortScannerOptions portScannerOptions) {
+              return std::make_shared<common::PortScanner>(
+                  std::move(portScannerOptions));
+          }) {}
+
+SunspecDiscovery::SunspecDiscovery(
+    SunspecDiscoveryOptions options,
+    PortScannerFactory portScannerFactory) {
+    validateOptions(options);
+    auto addresses = configuredAddresses(options);
+    if (!portScannerFactory) {
+        throw std::invalid_argument(
+            "SunSpec discovery requires a port scanner factory");
+    }
+    _state = std::make_shared<State>(
+        std::move(options),
+        std::move(addresses),
+        std::move(portScannerFactory));
 }
 
 SunspecDiscovery::~SunspecDiscovery() {
     stop();
 }
 
-common::Flow<SunspecThing> SunspecDiscovery::scan() const {
-    auto observable = rpp::source::create<SunspecThing>(
-        [state = _state, options = _options](auto&& observer) {
-            using Observer = std::decay_t<decltype(observer)>;
-            struct Collection
-                : std::enable_shared_from_this<Collection> {
-                Collection(
-                    std::shared_ptr<State> collectionState,
-                    SunspecDiscoveryOptions collectionOptions,
-                    std::shared_ptr<Observer> collectionObserver)
-                    : state{std::move(collectionState)}
-                    , options{std::move(collectionOptions)}
-                    , observer{std::move(collectionObserver)} {}
-
-                std::shared_ptr<State> state;
-                SunspecDiscoveryOptions options;
-                std::shared_ptr<Observer> observer;
-                std::set<std::tuple<
-                    std::string,
-                    std::uint16_t,
-                    std::string,
-                    std::string,
-                    std::string>>
-                    emitted;
-                std::size_t pending{};
-                bool sourceCompleted{};
-                bool finished{};
-
-                void start() {
-                    state->stopRequested = false;
-                    auto self = this->shared_from_this();
-                    static_cast<void>(state->modbus->candidates().collect(
-                        [self](const modbus::ModbusThing& thing) {
-                            self->onModbus(thing);
-                        },
-                        [self](std::exception_ptr error) {
-                            self->finished = true;
-                            self->observer->on_error(error);
-                        },
-                        [self] {
-                            self->sourceCompleted = true;
-                            self->maybeComplete();
-                        }));
-                    state->modbus->start();
-                }
-
-                void onModbus(const modbus::ModbusThing& modbusThing) {
-                    if (finished || state->stopRequested.load()) {
-                        return;
-                    }
-                    ++pending;
-                    auto self = this->shared_from_this();
-                    auto probe = std::make_shared<Probe>(
-                        modbusThing,
-                        options,
-                        state->stopRequested,
-                        [self](std::optional<SunspecThing> thing) {
-                            self->onProbe(std::move(thing));
-                        });
-                    probe->start();
-                }
-
-                void onProbe(std::optional<SunspecThing> thing) {
-                    if (pending > 0) {
-                        --pending;
-                    }
-                    if (!finished && !state->stopRequested.load() && thing) {
-                        auto identity = std::make_tuple(
-                            thing->endpoint.address,
-                            thing->endpoint.port,
-                            thing->manufacturer,
-                            thing->model,
-                            thing->serialNumber.empty()
-                                ? std::to_string(thing->unitId)
-                                : thing->serialNumber);
-                        if (emitted.insert(std::move(identity)).second) {
-                            observer->on_next(std::move(*thing));
-                        }
-                    }
-                    maybeComplete();
-                }
-
-                void maybeComplete() {
-                    if (finished || !sourceCompleted || pending != 0) {
-                        return;
-                    }
-                    finished = true;
-                    observer->on_completed();
-                }
-            };
-
-            auto collection = std::make_shared<Collection>(
-                state,
-                options,
-                std::make_shared<Observer>(std::move(observer)));
-            collection->start();
-        });
-    return common::Flow<SunspecThing>{observable.as_dynamic()};
+void SunspecDiscovery::start() {
+    const auto state = _state;
+    if (state->started || state->terminal) {
+        return;
+    }
+    const auto loop = common::Reactor::loop();
+    if (loop->isRunning() && !loop->isInLoopThread()) {
+        throw std::logic_error(
+            "SunSpec discovery must start on the Reactor loop");
+    }
+    if (!loop->isRunning() && common::Reactor::hasRun()) {
+        throw std::logic_error(
+            "SunSpec discovery cannot start after the Reactor stops");
+    }
+    state->started = true;
+    state->run = std::make_shared<Run>(state);
+    state->run->start();
 }
 
-void SunspecDiscovery::start() {
-    auto state = _state;
-    static_cast<void>(scan().collect(
-        [state](SunspecThing thing) {
-            state->subject.get_observer().on_next(std::move(thing));
-        },
-        [state](std::exception_ptr error) {
-            state->subject.get_observer().on_error(error);
-        },
-        [state] {
-            state->subject.get_observer().on_completed();
-        }));
+void SunspecDiscovery::stop() {
+    const auto state = _state;
+    if (!state || !state->started || state->terminal || state->stopping) {
+        return;
+    }
+    const auto loop = common::Reactor::loop();
+    if (!loop->isRunning()) {
+        if (!state->loopEntered) {
+            state->stopping = true;
+        }
+        return;
+    }
+    if (!loop->isInLoopThread()) {
+        throw std::logic_error(
+            "SunSpec discovery must stop on the Reactor loop");
+    }
+    state->stopping = true;
+    state->run->stop();
 }
 
 const common::Flow<SunspecThing>& SunspecDiscovery::candidates()
     const noexcept {
     return _state->candidates;
-}
-
-void SunspecDiscovery::stop() {
-    _state->stopRequested = true;
-    _state->modbus->stop();
 }
 
 bool SunspecDiscovery::isSunspecSignature(

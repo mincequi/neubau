@@ -85,6 +85,9 @@ using ModbusScriptStep = std::variant<
 
 class ModbusFakeServer {
 public:
+    using ConnectionScripts =
+        std::vector<std::vector<ModbusScriptStep>>;
+
     explicit ModbusFakeServer(std::vector<ModbusScriptStep> script)
         : _script{std::move(script)}
         , _server{common::Reactor::loop()} {
@@ -108,7 +111,42 @@ public:
         _server.onMessage =
             [this](const hv::SocketChannelPtr& channel, hv::Buffer* buffer) {
                 assert(common::Reactor::loop()->isInLoopThread());
-                onData(channel, buffer->data(), buffer->size());
+                onData(
+                    channel,
+                    buffer->data(),
+                    buffer->size(),
+                    scriptFor(channel));
+            };
+    }
+
+    explicit ModbusFakeServer(ConnectionScripts scripts)
+        : _connectionScripts{std::move(scripts)}
+        , _server{common::Reactor::loop()} {
+        for (auto candidate = _nextPort; candidate < 63000; ++candidate) {
+            if (_server.createsocket(candidate, "0.0.0.0") >= 0) {
+                _port = candidate;
+                _nextPort = static_cast<std::uint16_t>(candidate + 1);
+                break;
+            }
+        }
+        if (_port == 0) {
+            throw std::runtime_error("could not allocate fake Modbus port");
+        }
+        _server.setThreadNum(0);
+        _server.onConnection = [this](const hv::SocketChannelPtr& channel) {
+            if (channel->isConnected()) {
+                assert(common::Reactor::loop()->isInLoopThread());
+                ++_connectionCount;
+            }
+        };
+        _server.onMessage =
+            [this](const hv::SocketChannelPtr& channel, hv::Buffer* buffer) {
+                assert(common::Reactor::loop()->isInLoopThread());
+                onData(
+                    channel,
+                    buffer->data(),
+                    buffer->size(),
+                    scriptFor(channel));
             };
     }
 
@@ -348,43 +386,67 @@ private:
         }
     }
 
+    [[nodiscard]] const std::vector<ModbusScriptStep>& scriptFor(
+        const hv::SocketChannelPtr& channel) {
+        if (_connectionScripts.empty()) {
+            return _script;
+        }
+        const auto [entry, inserted] =
+            _scriptByConnection.try_emplace(
+                channel->fd(), _nextConnectionScript);
+        if (inserted) {
+            ++_nextConnectionScript;
+        }
+        assert(entry->second < _connectionScripts.size());
+        return _connectionScripts[entry->second];
+    }
+
     void onData(
         const hv::SocketChannelPtr& channel,
         const void* data,
-        std::size_t size) {
+        std::size_t size,
+        const std::vector<ModbusScriptStep>& script) {
         const auto* bytes = static_cast<const std::uint8_t*>(data);
-        _received.insert(_received.end(), bytes, bytes + size);
-        while (_received.size() >= 6) {
-            const auto length = readU16(_received.data() + 4);
+        auto& received = _received[channel->fd()];
+        auto& nextStep = _connectionScripts.empty()
+            ? _nextStep
+            : _nextStepByConnection[channel->fd()];
+        received.insert(received.end(), bytes, bytes + size);
+        while (received.size() >= 6) {
+            const auto length = readU16(received.data() + 4);
             const auto frameSize = static_cast<std::size_t>(6 + length);
-            if (length != 6 || _received.size() < frameSize) {
+            if (length != 6 || received.size() < frameSize) {
                 return;
             }
             const ModbusRequest request{
-                .transactionId = readU16(_received.data()),
-                .protocolId = readU16(_received.data() + 2),
-                .unitId = _received[6],
-                .function = _received[7],
-                .address = readU16(_received.data() + 8),
-                .count = readU16(_received.data() + 10),
+                .transactionId = readU16(received.data()),
+                .protocolId = readU16(received.data() + 2),
+                .unitId = received[6],
+                .function = received[7],
+                .address = readU16(received.data() + 8),
+                .count = readU16(received.data() + 10),
             };
-            _received.erase(
-                _received.begin(),
-                _received.begin() + static_cast<std::ptrdiff_t>(frameSize));
+            received.erase(
+                received.begin(),
+                received.begin() + static_cast<std::ptrdiff_t>(frameSize));
             _requests.push_back(request);
-            if (_nextStep < _script.size()) {
-                replyFor(channel, request, _script[_nextStep++]);
+            if (nextStep < script.size()) {
+                replyFor(channel, request, script[nextStep++]);
             }
         }
     }
 
     std::vector<ModbusScriptStep> _script;
+    ConnectionScripts _connectionScripts;
     hv::TcpServerEventLoopTmpl<> _server;
-    std::vector<std::uint8_t> _received;
+    std::map<int, std::vector<std::uint8_t>> _received;
     std::vector<ModbusRequest> _requests;
     std::vector<hv::TimerID> _timers;
     std::size_t _nextStep{};
+    std::map<int, std::size_t> _nextStepByConnection;
+    std::map<int, std::size_t> _scriptByConnection;
     std::size_t _connectionCount{};
+    std::size_t _nextConnectionScript{};
     std::uint16_t _port{};
     bool _stopped{};
     inline static std::uint16_t _nextPort{62000};

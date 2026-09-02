@@ -1,14 +1,15 @@
 #pragma once
 
 #include "common/Discovery.hpp"
+#include "common/PortScanner.hpp"
 #include "common/Thing.hpp"
-#include "modbus/ModbusDiscovery.hpp"
 #include "modbus/ModbusSession.hpp"
 #include "sunspec/SunspecTypes.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <string>
@@ -16,13 +17,23 @@
 
 namespace neubau::sunspec {
 
+namespace testing {
+
+class SunspecDiscoveryTestAccess;
+
+} // namespace testing
+
+struct SunspecModbusDiscoveryOptions {
+    std::vector<std::string> cidrs;
+    std::uint16_t port{502};
+    std::chrono::milliseconds connectTimeout{250};
+    std::chrono::milliseconds responseTimeout{500};
+    std::size_t maxConcurrency{32};
+    std::size_t maxHosts{4096};
+};
+
 struct SunspecDiscoveryOptions {
-    modbus::ModbusDiscoveryOptions modbus = [] {
-        modbus::ModbusDiscoveryOptions options;
-        options.unitIds = {1, 126, 128};
-        return options;
-    }();
-    std::vector<std::uint16_t> baseAddresses{40000, 50000, 0};
+    SunspecModbusDiscoveryOptions modbus;
     std::size_t maxModels{256};
     std::size_t maxRegisterSpan{10000};
 };
@@ -62,8 +73,18 @@ public:
     SunspecDiscovery(const SunspecDiscovery&) = delete;
     SunspecDiscovery& operator=(const SunspecDiscovery&) = delete;
 
+    // This one-shot discovery is idempotent: repeated calls do not rescan.
+    // Subscribe to candidates() before starting. Call start() before the
+    // first Reactor::run(), or from its running loop.
     void start() override;
+
+    // Call from the running Reactor loop to cancel active work. Calling stop()
+    // before the loop runs cancels a pending start; after the loop stops it is
+    // a safe no-op and never queues work or closes Reactor-bound sessions.
     void stop() override;
+
+    // The hot candidates flow completes once all opened endpoints complete,
+    // or after an in-loop stop has cancelled the active orchestration.
     [[nodiscard]] const common::Flow<SunspecThing>& candidates()
         const noexcept override;
 
@@ -71,12 +92,19 @@ public:
         const std::vector<std::uint16_t>& registers);
 
 private:
-    struct State;
+    using PortScannerFactory = std::function<std::shared_ptr<
+        common::Discovery<common::OpenPort>>(common::PortScannerOptions)>;
 
-    [[nodiscard]] common::Flow<SunspecThing> scan() const;
+    SunspecDiscovery(
+        SunspecDiscoveryOptions options,
+        PortScannerFactory portScannerFactory);
+
+    friend class testing::SunspecDiscoveryTestAccess;
+
+    struct State;
+    class Run;
 
     std::shared_ptr<State> _state;
-    SunspecDiscoveryOptions _options;
 };
 
 } // namespace neubau::sunspec
