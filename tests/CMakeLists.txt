@@ -153,6 +153,36 @@ target_link_libraries(sunspec_discovery_test PRIVATE neubau::sunspec)
 
 add_test(NAME sunspec_discovery_test COMMAND sunspec_discovery_test)
 
+add_executable(
+    sunspec_discovery_off_loop_destruction_test
+    sunspec_discovery_off_loop_destruction_test.cpp
+)
+target_link_libraries(
+    sunspec_discovery_off_loop_destruction_test
+    PRIVATE
+        neubau::sunspec
+)
+
+add_test(
+    NAME sunspec_discovery_off_loop_destruction_test
+    COMMAND sunspec_discovery_off_loop_destruction_test
+)
+
+add_executable(
+    sunspec_discovery_callback_stop_test
+    sunspec_discovery_callback_stop_test.cpp
+)
+target_link_libraries(
+    sunspec_discovery_callback_stop_test
+    PRIVATE
+        neubau::sunspec
+)
+
+add_test(
+    NAME sunspec_discovery_callback_stop_test
+    COMMAND sunspec_discovery_callback_stop_test
+)
+
 add_executable(sunspec_identity_test sunspec_identity_test.cpp)
 target_link_libraries(sunspec_identity_test PRIVATE neubau::sunspec)
 

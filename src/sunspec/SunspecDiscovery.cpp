@@ -477,8 +477,43 @@ SunspecDiscovery::SunspecDiscovery(
         std::move(portScannerFactory));
 }
 
-SunspecDiscovery::~SunspecDiscovery() {
-    stop();
+SunspecDiscovery::~SunspecDiscovery() noexcept {
+    teardown();
+}
+
+void SunspecDiscovery::teardownState(std::shared_ptr<State> state) noexcept {
+    try {
+        const auto loop = common::Reactor::loop();
+        if (!loop->isRunning() || !loop->isInLoopThread() || !state
+            || !state->started || state->terminal || state->stopping) {
+            return;
+        }
+        state->stopping = true;
+        if (state->run) {
+            state->run->stop();
+        }
+    } catch (...) {
+    }
+}
+
+void SunspecDiscovery::teardown() noexcept {
+    auto state = std::move(_state);
+    if (!state) {
+        return;
+    }
+
+    try {
+        const auto loop = common::Reactor::loop();
+        if (!loop->isRunning()) {
+            return;
+        }
+        if (loop->isInLoopThread()) {
+            teardownState(std::move(state));
+            return;
+        }
+        loop->queueInLoop([state] { teardownState(state); });
+    } catch (...) {
+    }
 }
 
 void SunspecDiscovery::start() {

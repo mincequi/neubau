@@ -68,7 +68,7 @@ std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing);
 class SunspecDiscovery : public common::Discovery<SunspecThing> {
 public:
     explicit SunspecDiscovery(SunspecDiscoveryOptions options);
-    ~SunspecDiscovery() override;
+    ~SunspecDiscovery() noexcept override;
 
     SunspecDiscovery(const SunspecDiscovery&) = delete;
     SunspecDiscovery& operator=(const SunspecDiscovery&) = delete;
@@ -103,6 +103,9 @@ private:
 
     struct State;
     class Run;
+
+    static void teardownState(std::shared_ptr<State> state) noexcept;
+    void teardown() noexcept;
 
     std::shared_ptr<State> _state;
 };

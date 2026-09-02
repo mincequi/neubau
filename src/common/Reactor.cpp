@@ -1,6 +1,8 @@
 #include "common/Reactor.hpp"
 
+#include <atomic>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace neubau::common {
@@ -22,6 +24,11 @@ RunState& reactorRunState() {
     return state;
 }
 
+std::atomic<std::thread::id>& reactorThread() {
+    static std::atomic<std::thread::id> thread;
+    return thread;
+}
+
 } // namespace
 
 hv::EventLoopPtr Reactor::loop() {
@@ -30,6 +37,11 @@ hv::EventLoopPtr Reactor::loop() {
         loop = std::make_shared<hv::EventLoop>();
     }
     return loop;
+}
+
+bool Reactor::isInLoopThread() noexcept {
+    return reactorThread().load(std::memory_order_acquire)
+        == std::this_thread::get_id();
 }
 
 bool Reactor::hasRun() noexcept {
@@ -77,6 +89,7 @@ Reactor::RunScope Reactor::enterRun() {
         throw std::logic_error("reactor loop has already been entered");
     }
     reactorRunState() = RunState::running;
+    reactorThread().store(std::this_thread::get_id(), std::memory_order_release);
     return RunScope{true};
 }
 

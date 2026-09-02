@@ -25,6 +25,8 @@ public:
     };
 
     [[nodiscard]] static hv::EventLoopPtr loop();
+    // Remains true for the Reactor-owning thread while the loop stops.
+    [[nodiscard]] static bool isInLoopThread() noexcept;
     // Enter the shared loop lifecycle when an external runner owns loop().
     [[nodiscard]] static RunScope enterRun();
     // Whether this process-wide loop has already been entered.

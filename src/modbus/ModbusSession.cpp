@@ -457,11 +457,11 @@ std::chrono::milliseconds ModbusSession::responseTimeout() const {
 
 bool ModbusSession::isClosed() const {
     const auto loop = common::Reactor::loop();
-    if (!loop->isRunning() || !loop->isInLoopThread()) {
+    if (!common::Reactor::isInLoopThread()) {
         throw std::logic_error(
             "Modbus session state must be read on the Reactor loop");
     }
-    return !_state || _state->_closed;
+    return !loop->isRunning() || !_state || _state->_closed;
 }
 
 void ModbusSession::close() {

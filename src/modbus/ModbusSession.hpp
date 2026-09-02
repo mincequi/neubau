@@ -44,7 +44,7 @@ public:
     [[nodiscard]] std::chrono::milliseconds connectTimeout() const;
     [[nodiscard]] std::chrono::milliseconds responseTimeout() const;
 
-    // Must be called on the Reactor loop.
+    // Must be called from the Reactor loop thread, including during shutdown.
     [[nodiscard]] bool isClosed() const;
 
     // Must be called on the Reactor loop before Reactor teardown.
