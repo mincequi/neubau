@@ -83,3 +83,58 @@ artifacts were removed afterwards.
 
 - `3ee77edcec6c6495c9af8c3f8debba7e5a3355fa` — Publish discovered SunSpec
   things
+
+## Fix round 1
+
+### Review corrections
+
+The README had generalized two bounded scanner behaviors into unconditional
+claims. The scanner advances through the ordered unit IDs only until it emits
+the first fully valid, terminated chain, and reaches all 247 only when no
+header is accepted. It also completes without an emission when a selected
+header's Common Model or model chain cannot complete. One viable
+`ModbusSession` reuses its TCP connection, while a transport-closed session is
+replaced and scanning continues at the next untried priority ID. The README now
+states each of these behaviors explicitly.
+
+The adapter callback additions are coverage-only: RPP's publish subject already
+delivers one terminal event and ignores later terminal events. The strengthened
+test proves the supplied error callback runs exactly once with no completion
+after an error, and the supplied completion callback runs exactly once with no
+error after completion. No adapter production behavior changed.
+
+### Live detail verification
+
+The exact binary `./build/src/neubau` was launched again and `/api/things` was
+polled for up to 45 seconds, stopping as soon as an environment-provided
+SunSpec ID appeared. It found
+`elgris_smart_meter_1900042748` (five total listed things). Its fully
+percent-encoded detail request was:
+
+```text
+GET /api/things/%65%6C%67%72%69%73%5F%73%6D%61%72%74%5F%6D%65%74%65%72%5F%31%39%30%30%30%34%32%37%34%38
+```
+
+It returned status `200` with the exact shape and current empty property map:
+
+```json
+{
+  "id": "elgris_smart_meter_1900042748",
+  "name": "elgris_smart_meter_1900042748",
+  "properties": {}
+}
+```
+
+`GET /health` returned `ok`. A minimal valid WebSocket upgrade returned
+`101 Switching Protocols`, `Upgrade: websocket`, and
+`Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`; curl then timed out as
+expected because the upgraded socket remained open. macOS
+`ps -M -p 98676 | sed 1d` reported one process thread. Exact PID `98676` was
+terminated with `SIGTERM`, confirmed absent, and the live log/PID artifacts
+were removed.
+
+### Fix-round verification
+
+Focused adapter and Reactor lifecycle tests passed: 2/2. Full build, CTest
+with `--timeout 20`, and `git diff --check` passed: 24/24 tests and zero
+whitespace errors.

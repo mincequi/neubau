@@ -195,8 +195,12 @@ timeouts, concurrency, port, unit IDs, and the host cap are configurable.
 
 `src/sunspec/SunspecDiscovery.hpp` discovers devices from explicitly configured
 IPv4 CIDRs. For every reachable Modbus TCP endpoint, it uses one persistent
-connection and probes every unit ID from `1` through `247` exactly once in
-vendor-prioritized order. The prefix is
+connection while that session remains viable and probes unit IDs from `1`
+through `247` sequentially in vendor-prioritized order. It stops unit probing
+after the first fully valid, terminated SunSpec chain; when no header is
+accepted, exhaustion reaches all 247 IDs. A valid header whose Common Model or
+model chain cannot be completed also ends that endpoint scan without an
+emission. The prefix is
 `1, 240, 126-127, 100, 2, 247, 241, 128-129, 3-4, 5, 242-244, 130-135, 6-10`;
 it then probes the ranges `11-99`, `101-125`, `136-239`, and finally
 `245-246`.
@@ -206,7 +210,9 @@ only `{0x5375, 0x6e53, 1, 65-or-66}`. A valid header leads to Common Model 1
 metadata and traversal of the complete model chain, which must end with the
 `0xffff` terminator. Repeated model IDs are retained as separate ordered
 locations, and unknown model IDs remain visible as locations even without a
-parser. A completed candidate has a stable ID:
+parser. A transport closure replaces the closed connection with a new session
+for that endpoint and continues at the next untried priority ID. A completed
+candidate has a stable ID:
 
 ```text
 normalize(manufacturer) + "_" + normalize(product) + "_" + normalize(serial)

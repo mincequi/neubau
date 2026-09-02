@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -152,33 +153,46 @@ void forwardsDiscoveryError() {
     const auto expected =
         std::make_exception_ptr(std::runtime_error{"discovery failed"});
     std::exception_ptr received;
+    std::size_t errors{};
+    std::size_t completions{};
 
     auto subscription = neubau::common::addCandidatesToRepository(
         discovery,
         *store.repository,
-        [&received](std::exception_ptr error) {
+        [&received, &errors](std::exception_ptr error) {
             received = std::move(error);
+            ++errors;
         },
-        [] { assert(false); });
+        [&completions] { ++completions; });
     discovery.fail(expected);
+    discovery.fail(
+        std::make_exception_ptr(std::runtime_error{"second failure"}));
+    discovery.complete();
 
     assert(received == expected);
+    assert(errors == 1);
+    assert(completions == 0);
     subscription.dispose();
 }
 
 void forwardsDiscoveryCompletion() {
     TestStore store{"completion"};
     FakeSunspecDiscovery discovery;
-    bool completed{};
+    std::size_t errors{};
+    std::size_t completions{};
 
     auto subscription = neubau::common::addCandidatesToRepository(
         discovery,
         *store.repository,
-        [](std::exception_ptr) { assert(false); },
-        [&completed] { completed = true; });
+        [&errors](std::exception_ptr) { ++errors; },
+        [&completions] { ++completions; });
     discovery.complete();
+    discovery.complete();
+    discovery.fail(
+        std::make_exception_ptr(std::runtime_error{"late failure"}));
 
-    assert(completed);
+    assert(errors == 0);
+    assert(completions == 1);
     subscription.dispose();
 }
 
