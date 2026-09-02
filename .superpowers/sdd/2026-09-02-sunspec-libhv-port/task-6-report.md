@@ -60,3 +60,58 @@ orchestration remains intentionally untouched.
 ## Commit
 
 - Implementation and tests: `4045eb27413df43337d3d0d59eaf38b8d927f86d`
+
+## Fix round 1: cancellable scans
+
+### Finding disposition
+
+The cancellation finding was confirmed by tracing the scanner state machine:
+the original scan state had no cancellation state, and a close-induced
+`onProbeFailure()` called `replaceClosedSession()` before advancing to the
+next unit.  Disposing an RPP observer did not stop this work.
+
+`SunspecScanControl` is now a small per-subscription token.  Callers create
+one token, retain it with their subscription, and pass it to
+`scanner.scan(control)`.  Its `cancel()` operation is Reactor-loop-only and
+idempotent.  It marks the scan finished before closing its active
+`ModbusSession`, so close-induced callbacks cannot replace the session,
+request another unit, start another chunk, emit, or terminally notify twice.
+The compatibility `scan()` overload creates a distinct token for each cold
+subscription.  Task 7 orchestration remains untouched.
+
+### TDD evidence
+
+- **RED:** the focused scanner build failed against the desired API with
+  `no member named 'SunspecScanControl' in namespace 'neubau::sunspec'` and
+  `too many arguments to function call, expected 0, have 1` for
+  `scanner.scan(control)`.
+- **GREEN (focused):** the scanner test passed after adding the token:
+  `1/1 Test #19: sunspec_scanner_test ... Passed`.
+- **GREEN (full):** the project build and CTest passed 21/21 with zero
+  failures; `git diff --check` was clean.  The pre-existing duplicate
+  `libneubau_modbus.a` linker warning remained during the full build.
+
+### Cancellation coverage
+
+The live fake-server suite cancels a no-reply request during unit probing and
+cancels the first 125-register physical request during a 126-register model
+payload.  Both cases call `cancel()` twice, observe exactly one completion and
+no emission, wait after cancellation, and prove that no replacement session
+or later request occurs.  The chunk case consequently proves no second
+`40196/1` request is issued after cancellation.
+
+### Ordered-content minor finding
+
+This is deferred rather than adding a synthetic production seam.  The Task 6
+scanner reassembles generic model payloads solely to validate their exact
+logical length and to sequence the next header; `SunspecThing` intentionally
+retains locations and common metadata, not generic payload values.  Therefore
+payload contents have no Task 6 behavior-visible consumer.  The existing
+test proves the exact contiguous physical requests and that traversal reaches
+the next ordered location only after both chunks.  An ordered-content
+assertion belongs with the first parser or polling feature that consumes these
+register values.
+
+### Commit
+
+- Cancellation implementation and tests: `1874e0023e1d93148b570fb485a864c4e6611747`
