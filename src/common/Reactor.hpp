@@ -2,6 +2,8 @@
 
 #include <hv/EventLoop.h>
 
+#include <functional>
+
 namespace neubau::common {
 
 class Reactor {
@@ -29,6 +31,8 @@ public:
     [[nodiscard]] static bool hasRun() noexcept;
     static void setLoop(hv::EventLoopPtr loop);
     static void run();
+    // Invokes onStarted on the running lazy-initialized loop.
+    static void run(std::function<void(hv::EventLoopPtr)> onStarted);
     static void stop();
 };
 

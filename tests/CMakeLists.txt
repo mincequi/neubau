@@ -3,6 +3,11 @@ target_link_libraries(common_flow_test PRIVATE neubau::common)
 
 add_test(NAME common_flow_test COMMAND common_flow_test)
 
+add_executable(reactor_lazy_run_test reactor_lazy_run_test.cpp)
+target_link_libraries(reactor_lazy_run_test PRIVATE neubau::common)
+
+add_test(NAME reactor_lazy_run_test COMMAND reactor_lazy_run_test)
+
 add_executable(property_test property_test.cpp)
 target_link_libraries(property_test PRIVATE neubau::common)
 

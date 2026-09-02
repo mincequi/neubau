@@ -48,8 +48,19 @@ void Reactor::setLoop(hv::EventLoopPtr loop) {
 }
 
 void Reactor::run() {
+    run({});
+}
+
+void Reactor::run(std::function<void(hv::EventLoopPtr)> onStarted) {
+    const auto current = loop();
     auto runScope = enterRun();
-    loop()->run();
+    if (onStarted) {
+        current->queueInLoop(
+            [current, onStarted = std::move(onStarted)] {
+                onStarted(current);
+            });
+    }
+    current->run();
 }
 
 void Reactor::stop() {

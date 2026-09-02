@@ -91,3 +91,23 @@ destroying during a candidate still emitted completion
 the final focused suite passed 10/10 tests.
 
 Final fix-round build and CTest validation passed: 22/22 tests.
+
+## Fix round 2: lazy direct Reactor run
+
+`Reactor::run()` entered `RunScope` before initializing the lazy loop, while
+`enterRun()` correctly rejects an absent loop. This was a confirmed regression
+for a fresh process. The direct runner now obtains the loop first, then enters
+the authoritative scope, and runs that retained loop. The `RunScope` state
+machine and its post-stop rejection remain unchanged.
+
+**RED:** the dedicated fresh-process `reactor_lazy_run_test` called
+`Reactor::run()` without any prior `Reactor::loop()` access and failed with
+`std::logic_error: reactor loop has not been configured`.
+
+**GREEN:** `Reactor::run(onStarted)` now queues the callback onto the running
+lazy-initialized loop. The regression schedules a loop timer there to call
+`Reactor::stop()`, proves the callback is loop-bound, and verifies a second
+direct run is rejected. No production or test worker thread is needed.
+
+Final round-2 focused lifecycle/SunSpec/Modbus validation passed: 11/11 tests.
+Final round-2 full build and CTest validation passed: 23/23 tests.
