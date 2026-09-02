@@ -7,6 +7,7 @@
 #include <hv/WebSocketServer.h>
 
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -60,8 +61,13 @@ int WebAppService::run(std::function<void()> onStarted) {
     server.registerHttpService(&service);
     server.setPort(serverPort);
     server.setThreadNum(1);
-    server.onWorkerStart = [&server, onStarted = std::move(onStarted)] {
+    std::optional<common::Reactor::RunScope> reactorRun;
+    server.onWorkerStart = [
+                               &server,
+                               &reactorRun,
+                               onStarted = std::move(onStarted)] {
         common::Reactor::setLoop(server.loop());
+        reactorRun.emplace(common::Reactor::enterRun());
         if (onStarted) {
             onStarted();
         }

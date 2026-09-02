@@ -25,6 +25,7 @@ using neubau::sunspec::SunspecDiscovery;
 using neubau::sunspec::SunspecDiscoveryOptions;
 using neubau::sunspec::SunspecThing;
 using neubau::test::CloseConnection;
+using neubau::test::DelayReply;
 using neubau::test::ModbusFakeServer;
 using neubau::test::ModbusScriptStep;
 using neubau::test::NoReply;
@@ -34,14 +35,20 @@ class EndpointDiscovery
     : public neubau::common::Discovery<neubau::common::OpenPort>
     , public std::enable_shared_from_this<EndpointDiscovery> {
 public:
-    explicit EndpointDiscovery(std::vector<neubau::common::OpenPort> endpoints)
+    explicit EndpointDiscovery(
+        std::vector<neubau::common::OpenPort> endpoints,
+        bool pending = false)
         : _endpoints{std::move(endpoints)}
+        , _pending{pending}
         , _candidates{_subject.get_observable().as_dynamic()} {}
 
     void start() override {
         assert(neubau::common::Reactor::loop()->isInLoopThread());
         assert(!_started);
         _started = true;
+        if (_pending) {
+            return;
+        }
         const auto self = shared_from_this();
         neubau::common::Reactor::loop()->queueInLoop([self] {
             if (!self->_stopped) {
@@ -55,6 +62,7 @@ public:
 
     void stop() override {
         assert(neubau::common::Reactor::loop()->isInLoopThread());
+        ++_stopCount;
         _stopped = true;
         complete();
     }
@@ -62,6 +70,10 @@ public:
     [[nodiscard]] const neubau::common::Flow<neubau::common::OpenPort>&
     candidates() const noexcept override {
         return _candidates;
+    }
+
+    [[nodiscard]] std::size_t stopCount() const noexcept {
+        return _stopCount;
     }
 
 private:
@@ -77,8 +89,10 @@ private:
     rpp::subjects::publish_subject<neubau::common::OpenPort> _subject;
     neubau::common::Flow<neubau::common::OpenPort> _candidates;
     bool _started{};
+    bool _pending{};
     bool _stopped{};
     bool _completed{};
+    std::size_t _stopCount{};
 };
 
 } // namespace
@@ -139,6 +153,14 @@ std::vector<ModbusScriptStep> validChain() {
     };
 }
 
+std::vector<ModbusScriptStep> delayedValidChain() {
+    return {
+        DelayReply{20ms, {0x5375, 0x6e53, 1, 65}},
+        ReplyHoldingRegisters{commonModelRegisters()},
+        ReplyHoldingRegisters{{0xffff, 0}},
+    };
+}
+
 SunspecDiscoveryOptions optionsFor(
     std::vector<std::string> cidrs,
     std::uint16_t port,
@@ -194,13 +216,6 @@ private:
         return server;
     }
 
-    [[nodiscard]] std::shared_ptr<ModbusFakeServer> fake(
-        ModbusFakeServer::ConnectionScripts scripts) {
-        auto server = std::make_shared<ModbusFakeServer>(std::move(scripts));
-        _servers.push_back(server);
-        return server;
-    }
-
     [[nodiscard]] std::shared_ptr<SunspecDiscovery> discovery(
         SunspecDiscoveryOptions options) {
         auto result = std::make_shared<SunspecDiscovery>(std::move(options));
@@ -213,16 +228,22 @@ private:
         std::vector<neubau::common::OpenPort> endpoints) {
         auto portDiscovery =
             std::make_shared<EndpointDiscovery>(std::move(endpoints));
-        auto result = neubau::sunspec::testing::SunspecDiscoveryTestAccess::
-            create(
-                std::move(options),
-                [portDiscovery](neubau::common::PortScannerOptions) {
-                    return std::shared_ptr<
-                        neubau::common::Discovery<neubau::common::OpenPort>>{
-                        portDiscovery};
-                });
+        auto result = injectedDiscovery(std::move(options), portDiscovery);
         _discoveries.push_back(result);
         return result;
+    }
+
+    [[nodiscard]] static std::shared_ptr<SunspecDiscovery> injectedDiscovery(
+        SunspecDiscoveryOptions options,
+        std::shared_ptr<EndpointDiscovery> portDiscovery) {
+        return neubau::sunspec::testing::SunspecDiscoveryTestAccess::create(
+            std::move(options),
+            [portDiscovery = std::move(portDiscovery)](
+                neubau::common::PortScannerOptions) {
+                return std::shared_ptr<
+                    neubau::common::Discovery<neubau::common::OpenPort>>{
+                    portDiscovery};
+            });
     }
 
     void assertReactorThread() const {
@@ -310,27 +331,27 @@ private:
     }
 
     void closedHostDoesNotEndOtherHost() {
-        auto server = fake({
-            {CloseConnection{}},
-            validChain(),
-            {NoReply{}},
-        });
+        auto failed = fake({CloseConnection{}, NoReply{}});
+        auto valid = fake(validChain());
         auto scan = discovery(optionsFor(
-                                  {"127.0.0.1/32"}, server->port()),
+                                  {"127.0.0.1/32"}, valid->port()),
                               {
-                                  {"127.0.0.1", server->port()},
-                                  {"127.0.0.1", server->port()},
+                                  {"127.0.0.1", failed->port()},
+                                  {"127.0.0.1", valid->port()},
                               });
         auto found = std::make_shared<std::vector<SunspecThing>>();
         auto completions = std::make_shared<std::size_t>();
         requireCompletion(completions);
         scan->candidates().collect(
-            [self = shared_from_this(), scan, server, found](
+            [self = shared_from_this(), scan, failed, valid, found](
                 SunspecThing thing) {
                 self->assertReactorThread();
                 assert(found->empty());
+                assert(thing.endpoint.address == "127.0.0.1");
+                assert(thing.endpoint.port == valid->port());
                 found->push_back(std::move(thing));
-                assert(server->requests().size() >= 2);
+                assert(failed->requests().size() >= 1);
+                assert(valid->requests().size() == 3);
                 scan->stop();
             },
             [](std::exception_ptr) { assert(false); },
@@ -343,12 +364,22 @@ private:
                     self->stopDuringPortConnectPreventsEndpointScan();
                 });
             });
-        server->start();
+        failed->start();
+        valid->start();
         scan->start();
     }
 
     void stopDuringPortConnectPreventsEndpointScan() {
-        auto scan = discovery(optionsFor({"203.0.113.1/32"}, 65000, 250ms));
+        auto server = fake({NoReply{}});
+        auto endpoints = std::make_shared<EndpointDiscovery>(
+            std::vector<neubau::common::OpenPort>{{
+                "127.0.0.1",
+                server->port(),
+            }},
+            true);
+        auto scan = injectedDiscovery(
+            optionsFor({"127.0.0.1/32"}, server->port()), endpoints);
+        _discoveries.push_back(scan);
         auto candidates = std::make_shared<std::size_t>();
         auto completions = std::make_shared<std::size_t>();
         requireCompletion(completions);
@@ -358,11 +389,13 @@ private:
                 ++*candidates;
             },
             [](std::exception_ptr) { assert(false); },
-            [self = shared_from_this(), candidates, completions] {
+            [self = shared_from_this(), server, endpoints, candidates, completions] {
                 self->assertReactorThread();
                 ++*completions;
                 assert(*completions == 1);
                 assert(*candidates == 0);
+                assert(endpoints->stopCount() == 1);
+                assert(server->connectionCount() == 0);
                 self->after(
                     20ms,
                     [self] { self->stopDuringUnitProbePreventsReplacement(); });
@@ -470,39 +503,142 @@ private:
     }
 
     void naturalCompletionWaitsForEveryOpenEndpoint() {
-        auto endpoints = fake({
-            {validHeader(), NoReply{}},
-            validChain(),
-        });
+        auto slow = fake({validHeader(), NoReply{}});
+        auto valid = fake(validChain());
         auto scan = discovery(optionsFor(
-                                  {"127.0.0.1/32"}, endpoints->port(), 80ms),
+                                  {"127.0.0.1/32"}, valid->port(), 80ms),
                               {
-                                  {"127.0.0.1", endpoints->port()},
-                                  {"127.0.0.1", endpoints->port()},
+                                  {"127.0.0.1", slow->port()},
+                                  {"127.0.0.1", valid->port()},
                               });
         auto candidates = std::make_shared<std::size_t>();
         auto completions = std::make_shared<std::size_t>();
         requireCompletion(completions, 500ms);
         scan->candidates().collect(
-            [self = shared_from_this(), candidates, completions](
+            [self = shared_from_this(), valid, candidates, completions](
                 SunspecThing thing) {
                 self->assertReactorThread();
                 assert(thing.id() == "acme__sn_42");
+                assert(thing.endpoint.port == valid->port());
                 ++*candidates;
                 assert(*candidates == 1);
                 assert(*completions == 0);
             },
             [](std::exception_ptr) { assert(false);             },
-            [self = shared_from_this(), endpoints, candidates, completions] {
+            [self = shared_from_this(), slow, valid, candidates, completions] {
                 self->assertReactorThread();
                 ++*completions;
                 assert(*completions == 1);
                 assert(*candidates == 1);
-                assert(endpoints->requests().size() == 5);
+                assert(slow->requests().size() == 2);
+                assert(valid->requests().size() == 3);
+                self->destroyDiscoveryFromCandidateReleasesResources();
+            });
+        slow->start();
+        valid->start();
+        scan->start();
+    }
+
+    void destroyDiscoveryFromCandidateReleasesResources() {
+        auto slow = fake({NoReply{}});
+        auto valid = fake(delayedValidChain());
+        auto endpoints = std::make_shared<EndpointDiscovery>(
+            std::vector<neubau::common::OpenPort>{
+                {"127.0.0.1", slow->port()},
+                {"127.0.0.1", valid->port()},
+            });
+        const std::weak_ptr<EndpointDiscovery> weakEndpoints{endpoints};
+        auto owner =
+            std::make_shared<std::shared_ptr<SunspecDiscovery>>(
+                injectedDiscovery(
+                    optionsFor({"127.0.0.1/32"}, valid->port()),
+                    endpoints));
+        endpoints.reset();
+        const std::weak_ptr<SunspecDiscovery> weakDiscovery{*owner};
+        auto candidates = std::make_shared<std::size_t>();
+        auto completions = std::make_shared<std::size_t>();
+        (*owner)->candidates().collect(
+            [self = shared_from_this(),
+             owner,
+             valid,
+             candidates](SunspecThing thing) {
+                self->assertReactorThread();
+                assert(thing.endpoint.port == valid->port());
+                ++*candidates;
+                assert(*candidates == 1);
+                owner->reset();
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), completions] {
+                self->assertReactorThread();
+                ++*completions;
+            });
+        slow->start();
+        valid->start();
+        (*owner)->start();
+        after(
+            40ms,
+            [self = shared_from_this(),
+             slow,
+             weakEndpoints,
+             weakDiscovery,
+             candidates,
+             completions] {
+                assert(slow->requests().size() == 1);
+                assert(*candidates == 1);
+                assert(*completions == 0);
+                assert(weakDiscovery.expired());
+                assert(weakEndpoints.expired());
+                self->destroyDiscoveryFromCompletionReleasesResources();
+            });
+    }
+
+    void destroyDiscoveryFromCompletionReleasesResources() {
+        auto server = fake(validChain());
+        auto endpoints = std::make_shared<EndpointDiscovery>(
+            std::vector<neubau::common::OpenPort>{{
+                "127.0.0.1",
+                server->port(),
+            }});
+        const std::weak_ptr<EndpointDiscovery> weakEndpoints{endpoints};
+        auto owner =
+            std::make_shared<std::shared_ptr<SunspecDiscovery>>(
+                injectedDiscovery(
+                    optionsFor({"127.0.0.1/32"}, server->port()),
+                    endpoints));
+        endpoints.reset();
+        const std::weak_ptr<SunspecDiscovery> weakDiscovery{*owner};
+        auto candidates = std::make_shared<std::size_t>();
+        auto completions = std::make_shared<std::size_t>();
+        (*owner)->candidates().collect(
+            [self = shared_from_this(), candidates](SunspecThing) {
+                self->assertReactorThread();
+                ++*candidates;
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), owner, completions] {
+                self->assertReactorThread();
+                ++*completions;
+                assert(*completions == 1);
+                owner->reset();
+            });
+        server->start();
+        (*owner)->start();
+        after(
+            40ms,
+            [self = shared_from_this(),
+             server,
+             weakEndpoints,
+             weakDiscovery,
+             candidates,
+             completions] {
+                assert(server->requests().size() == 3);
+                assert(*candidates == 1);
+                assert(*completions == 1);
+                assert(weakDiscovery.expired());
+                assert(weakEndpoints.expired());
                 self->finish();
             });
-        endpoints->start();
-        scan->start();
     }
 
     void finish() {

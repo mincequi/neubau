@@ -83,7 +83,7 @@ struct SunspecDiscovery::State {
 class SunspecDiscovery::Run
     : public std::enable_shared_from_this<SunspecDiscovery::Run> {
 public:
-    explicit Run(std::shared_ptr<State> state)
+    explicit Run(std::weak_ptr<State> state)
         : _state{std::move(state)} {}
 
     void start() {
@@ -122,27 +122,31 @@ private:
     };
 
     void startInLoop() {
+        const auto state = _state.lock();
+        if (!state) {
+            return;
+        }
         const auto loop = common::Reactor::loop();
         if (!loop->isRunning() || !loop->isInLoopThread()) {
             throw std::logic_error(
                 "SunSpec discovery must run on the Reactor loop");
         }
 
-        _state->loopEntered = true;
-        if (_state->terminal || _state->stopping) {
+        state->loopEntered = true;
+        if (state->terminal || state->stopping) {
             complete();
             return;
         }
 
         try {
-            _portScanner = _state->portScannerFactory(
+            _portScanner = state->portScannerFactory(
                 common::PortScannerOptions{
-                    .addresses = _state->addresses,
-                    .ports = {_state->options.modbus.port},
+                    .addresses = state->addresses,
+                    .ports = {state->options.modbus.port},
                     .connectTimeout =
-                        _state->options.modbus.connectTimeout,
+                        state->options.modbus.connectTimeout,
                     .maxConcurrency =
-                        _state->options.modbus.maxConcurrency,
+                        state->options.modbus.maxConcurrency,
                 });
             if (!_portScanner) {
                 throw std::logic_error(
@@ -174,19 +178,21 @@ private:
 
     [[nodiscard]] std::shared_ptr<modbus::ModbusSession> createSession(
         const std::shared_ptr<EndpointScan>& endpoint) {
-        if (_stopping || _failing || _state->terminal) {
+        const auto state = _state.lock();
+        if (!state || _stopping || _failing || state->terminal) {
             return nullptr;
         }
         auto session = std::make_shared<modbus::ModbusSession>(
             endpoint->endpoint,
-            _state->options.modbus.connectTimeout,
-            _state->options.modbus.responseTimeout);
+            state->options.modbus.connectTimeout,
+            state->options.modbus.responseTimeout);
         endpoint->sessions.push_back(session);
         return session;
     }
 
     void openEndpoint(const common::OpenPort& openPort) {
-        if (_stopping || _failing || _state->terminal) {
+        const auto state = _state.lock();
+        if (!state || _stopping || _failing || state->terminal) {
             return;
         }
 
@@ -211,33 +217,42 @@ private:
                         ? self->createSession(endpoint)
                         : std::shared_ptr<modbus::ModbusSession>{};
                 },
-                _state->options);
+                state->options);
             endpoint->control = std::make_shared<SunspecScanControl>();
             _endpoints.push_back(endpoint);
             endpoint->subscription.emplace(endpoint->scanner->scan(
                 endpoint->control)
                                                .subscribe(
-                                                   [weak, endpoint](
+                                                   [weak, weakEndpoint](
                                                        SunspecThing thing) {
-                                                       if (const auto self =
-                                                               weak.lock()) {
+                                                       const auto self =
+                                                           weak.lock();
+                                                       const auto endpoint =
+                                                           weakEndpoint.lock();
+                                                       if (self && endpoint) {
                                                            self->candidate(
                                                                endpoint,
                                                                std::move(thing));
                                                        }
                                                    },
-                                                   [weak, endpoint](
+                                                   [weak, weakEndpoint](
                                                        std::exception_ptr error) {
-                                                       if (const auto self =
-                                                               weak.lock()) {
+                                                       const auto self =
+                                                           weak.lock();
+                                                       const auto endpoint =
+                                                           weakEndpoint.lock();
+                                                       if (self && endpoint) {
                                                            self->scannerFailed(
                                                                endpoint,
                                                                std::move(error));
                                                        }
                                                    },
-                                                   [weak, endpoint] {
-                                                       if (const auto self =
-                                                               weak.lock()) {
+                                                   [weak, weakEndpoint] {
+                                                       const auto self =
+                                                           weak.lock();
+                                                       const auto endpoint =
+                                                           weakEndpoint.lock();
+                                                       if (self && endpoint) {
                                                            self->scannerCompleted(
                                                                endpoint);
                                                        }
@@ -250,17 +265,20 @@ private:
     void candidate(
         const std::shared_ptr<EndpointScan>& endpoint,
         SunspecThing thing) {
-        if (_stopping || _failing || _state->terminal || endpoint->emitted) {
+        const auto state = _state.lock();
+        if (!state || _stopping || _failing || state->terminal
+            || endpoint->emitted) {
             return;
         }
         endpoint->emitted = true;
-        _state->subject.get_observer().on_next(std::move(thing));
+        state->subject.get_observer().on_next(std::move(thing));
     }
 
     void scannerFailed(
         const std::shared_ptr<EndpointScan>& endpoint,
         std::exception_ptr error) {
-        if (_stopping || _failing || _state->terminal) {
+        const auto state = _state.lock();
+        if (!state || _stopping || _failing || state->terminal) {
             scannerCompleted(endpoint);
             return;
         }
@@ -303,20 +321,22 @@ private:
     }
 
     void stopInLoop() {
-        if (_stopping || _failing || _state->terminal) {
+        const auto state = _state.lock();
+        if (!state || _stopping || _failing || state->terminal) {
             return;
         }
         _stopping = true;
         cancelAndCloseEndpoints();
-        if (_portScanner) {
-            _portScanner->stop();
+        if (const auto portScanner = _portScanner) {
+            portScanner->stop();
         } else {
             complete();
         }
     }
 
     void maybeComplete() {
-        if (_failing || _state->terminal || !_portsCompleted) {
+        const auto state = _state.lock();
+        if (!state || _failing || state->terminal || !_portsCompleted) {
             return;
         }
         for (const auto& endpoint : _endpoints) {
@@ -328,29 +348,31 @@ private:
     }
 
     void complete() {
-        if (_failing || _state->terminal) {
+        const auto state = _state.lock();
+        if (!state || _failing || state->terminal) {
             return;
         }
         for (const auto& endpoint : _endpoints) {
             closeSessions(endpoint);
         }
-        _state->terminal = true;
-        _state->subject.get_observer().on_completed();
+        state->terminal = true;
+        state->subject.get_observer().on_completed();
         releaseResources();
     }
 
     void fail(std::exception_ptr error) {
-        if (_failing || _state->terminal) {
+        const auto state = _state.lock();
+        if (!state || _failing || state->terminal) {
             return;
         }
         _failing = true;
         _stopping = true;
         cancelAndCloseEndpoints();
-        if (_portScanner) {
-            _portScanner->stop();
+        if (const auto portScanner = _portScanner) {
+            portScanner->stop();
         }
-        _state->terminal = true;
-        _state->subject.get_observer().on_error(std::move(error));
+        state->terminal = true;
+        state->subject.get_observer().on_error(std::move(error));
         releaseResources();
     }
 
@@ -365,7 +387,7 @@ private:
         }
     }
 
-    std::shared_ptr<State> _state;
+    std::weak_ptr<State> _state;
     std::shared_ptr<common::Discovery<common::OpenPort>> _portScanner;
     std::optional<rpp::composite_disposable_wrapper> _portSubscription;
     std::vector<std::shared_ptr<EndpointScan>> _endpoints;

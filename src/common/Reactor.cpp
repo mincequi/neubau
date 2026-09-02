@@ -6,14 +6,20 @@
 namespace neubau::common {
 namespace {
 
+enum class RunState {
+    ready,
+    running,
+    stopped,
+};
+
 hv::EventLoopPtr& reactorLoop() {
     static hv::EventLoopPtr loop;
     return loop;
 }
 
-bool& reactorHasRun() {
-    static bool hasRun{};
-    return hasRun;
+RunState& reactorRunState() {
+    static RunState state{RunState::ready};
+    return state;
 }
 
 } // namespace
@@ -27,7 +33,7 @@ hv::EventLoopPtr Reactor::loop() {
 }
 
 bool Reactor::hasRun() noexcept {
-    return reactorHasRun();
+    return reactorRunState() != RunState::ready;
 }
 
 void Reactor::setLoop(hv::EventLoopPtr loop) {
@@ -42,13 +48,46 @@ void Reactor::setLoop(hv::EventLoopPtr loop) {
 }
 
 void Reactor::run() {
-    reactorHasRun() = true;
+    auto runScope = enterRun();
     loop()->run();
 }
 
 void Reactor::stop() {
     if (const auto current = reactorLoop()) {
         current->stop();
+    }
+}
+
+Reactor::RunScope Reactor::enterRun() {
+    if (!reactorLoop()) {
+        throw std::logic_error("reactor loop has not been configured");
+    }
+    if (reactorRunState() != RunState::ready) {
+        throw std::logic_error("reactor loop has already been entered");
+    }
+    reactorRunState() = RunState::running;
+    return RunScope{true};
+}
+
+Reactor::RunScope::RunScope(bool active) noexcept
+    : _active{active} {}
+
+Reactor::RunScope::RunScope(RunScope&& other) noexcept
+    : _active{std::exchange(other._active, false)} {}
+
+Reactor::RunScope& Reactor::RunScope::operator=(RunScope&& other) noexcept {
+    if (this != &other) {
+        if (_active) {
+            reactorRunState() = RunState::stopped;
+        }
+        _active = std::exchange(other._active, false);
+    }
+    return *this;
+}
+
+Reactor::RunScope::~RunScope() {
+    if (_active) {
+        reactorRunState() = RunState::stopped;
     }
 }
 

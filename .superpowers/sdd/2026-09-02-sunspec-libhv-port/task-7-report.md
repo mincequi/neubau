@@ -42,17 +42,52 @@ address, idempotent start/stop, hot-flow completion and Reactor callback
 affinity, a closing endpoint isolated from a valid endpoint, cancellation
 during port connect, unit probing, common traversal, and chunk traversal, and
 natural completion waiting for every opened endpoint. The test-only endpoint
-source and per-connection fake scripts are a narrow seam for the two-endpoint
-cases; the regular orchestration cases use the real `PortScanner` and
-event-loop-bound fake server.
+source is a narrow seam for deterministic multi-endpoint and pending-port-scan
+cases; its endpoints use separate real loopback fake servers. The regular
+orchestration cases use the real `PortScanner` and event-loop-bound fake
+server.
 
 Focused SunSpec/Modbus validation passed: 9/9 tests.
 Full build and CTest validation passed: 21/21 tests.
 
-## Caveat
+## Fix round 1: reviewer verification and repair
 
-This macOS environment cannot bind a second specific `127/8` loopback alias.
-The multi-endpoint cases therefore inject two event-loop endpoint candidates
-that each connect to the same real loopback fake server; independent
-per-connection scripts make one close/fail and the other emit. Production
-always uses `common::PortScanner`.
+All five findings were confirmed.
+
+1. `WebAppService::run()` invokes libhv `server.run()` directly, while the
+   previous lifecycle flag changed only in `Reactor::run()`. libhv's
+   `HttpServer.cpp` queues `onWorkerStart` inside its actual `EventLoop::run`,
+   confirming the mismatch. `Reactor::RunScope` is now the authoritative
+   lifecycle guard: `Reactor::run()` owns one directly and
+   `WebAppService::run()` owns one from the worker-start callback through
+   `server.run()` return. A real `WebAppService::run()` regression starts an
+   active discovery in that callback and verifies a new discovery is rejected
+   after the runner returns.
+2. `State::run` and `Run::_state` were mutually owning `shared_ptr`s. `Run`
+   now weakly references `State`, and endpoint subscriptions weakly reference
+   their endpoint record, while methods retain a local strong state reference
+   across candidate, completion, and error callbacks. Reentrancy tests destroy
+   discovery from candidate and completion callbacks, verify the
+   factory-captured endpoint source expires, and verify no late completion or
+   Modbus request occurs.
+3. The old isolation fixture supplied duplicate endpoints to one
+   connection-order-dependent fake. It now supplies distinct endpoint ports
+   backed by separate real fake servers, asserts the emitted port is the valid
+   server's port, and asserts that server consumed exactly its three-register
+   chain.
+4. The TEST-NET timeout test used a nondeterministic one-millisecond race. A
+   pending test endpoint source now proves `stop()` calls source stop exactly
+   once, completes once, and creates no Modbus connection.
+5. Callback-destruction and the external WebApp loop-runner regression cover
+   the requested reentrancy and post-loop lifecycle paths.
+
+**RED:** after adding the regressions, `sunspec_discovery_test` failed because
+destroying during a candidate still emitted completion
+(`sunspec_discovery_test.cpp:589`), and
+`webapp_reactor_lifecycle_test` failed because a start after
+`WebAppService::run()` was not rejected (`webapp_reactor_lifecycle_test.cpp:64`).
+
+**GREEN:** both tests passed after the lifecycle scope and weak-state repair;
+the final focused suite passed 10/10 tests.
+
+Final fix-round build and CTest validation passed: 22/22 tests.

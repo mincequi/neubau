@@ -153,6 +153,22 @@ target_link_libraries(webapp_service_test PRIVATE neubau::webapp)
 
 add_test(NAME webapp_service_test COMMAND webapp_service_test)
 
+add_executable(
+    webapp_reactor_lifecycle_test
+    webapp_reactor_lifecycle_test.cpp
+)
+target_link_libraries(
+    webapp_reactor_lifecycle_test
+    PRIVATE
+        neubau::sunspec
+        neubau::webapp
+)
+
+add_test(
+    NAME webapp_reactor_lifecycle_test
+    COMMAND webapp_reactor_lifecycle_test
+)
+
 add_executable(thing_json_test thing_json_test.cpp)
 target_link_libraries(thing_json_test PRIVATE neubau::webapp)
 
