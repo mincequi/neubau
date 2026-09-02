@@ -93,31 +93,59 @@ int main() {
     neubau::webapp::WebAppService webApp{things};
     std::function<void()> shutdown;
     const auto result = webApp.run(
-        [&shutdown] {
-            auto discovery =
+        [&shutdown, &things] {
+            auto loggingDiscovery =
                 std::make_shared<neubau::mdns::MdnsDiscovery>();
-            auto activeSubscription = discovery->services().subscribe(
-                logService,
-                [](std::exception_ptr error) {
-                    try {
-                        std::rethrow_exception(error);
-                    } catch (const std::exception& exception) {
-                        PLOGE << "Service discovery failed: "
-                              << exception.what();
-                    }
-                },
-                [] { PLOGI << "Service discovery stopped"; });
-            auto subscription =
-                std::make_shared<decltype(activeSubscription)>(
-                    std::move(activeSubscription));
+            auto activeLoggingSubscription =
+                loggingDiscovery->services().subscribe(
+                    logService,
+                    [](std::exception_ptr error) {
+                        try {
+                            std::rethrow_exception(error);
+                        } catch (const std::exception& exception) {
+                            PLOGE << "Service discovery failed: "
+                                  << exception.what();
+                        }
+                    },
+                    [] { PLOGI << "Service discovery stopped"; });
+            auto loggingSubscription =
+                std::make_shared<decltype(activeLoggingSubscription)>(
+                    std::move(activeLoggingSubscription));
 
-            discovery->discover("_shelly._tcp");
-            discovery->discover("_http._tcp");
+            auto shellyDiscovery =
+                std::make_shared<neubau::shelly::ShellyDiscovery>();
+            auto activeShellySubscription =
+                shellyDiscovery->candidates().subscribe(
+                    [&things](neubau::shelly::ShellyThing thing) {
+                        things.add(
+                            std::make_shared<neubau::shelly::ShellyThing>(
+                                std::move(thing)));
+                    },
+                    [](std::exception_ptr error) {
+                        try {
+                            std::rethrow_exception(error);
+                        } catch (const std::exception& exception) {
+                            PLOGE << "Shelly discovery failed: "
+                                  << exception.what();
+                        }
+                    },
+                    [] { PLOGI << "Shelly discovery stopped"; });
+            auto shellySubscription =
+                std::make_shared<decltype(activeShellySubscription)>(
+                    std::move(activeShellySubscription));
+
+            loggingDiscovery->discover("_shelly._tcp");
+            loggingDiscovery->discover("_http._tcp");
+            shellyDiscovery->start();
             shutdown = [
-                           discovery = std::move(discovery),
-                           subscription = std::move(subscription)] {
-                subscription->dispose();
-                discovery->stop();
+                           loggingDiscovery = std::move(loggingDiscovery),
+                           loggingSubscription = std::move(loggingSubscription),
+                           shellyDiscovery = std::move(shellyDiscovery),
+                           shellySubscription = std::move(shellySubscription)] {
+                shellySubscription->dispose();
+                shellyDiscovery->stop();
+                loggingSubscription->dispose();
+                loggingDiscovery->stop();
             };
         });
     if (shutdown) {

@@ -99,7 +99,60 @@ const auto interval =
 
 At startup, the application searches `_shelly._tcp` and `_http._tcp`.
 Shelly advertisements and go-eChargers identified by their DNS-SD TXT metadata
-are logged with plog as they arrive.
+are logged with plog as they arrive. Completed Shelly discovery candidates are
+also added to the runtime thing repository.
+
+## Runtime Thing API
+
+The web server exposes a read-only API on the same listener as the web UI:
+
+```text
+GET http://127.0.0.1:8030/api/things
+GET http://127.0.0.1:8030/api/things/{id}
+```
+
+`GET /api/things` returns status `200` and this JSON schema, where every item
+is a current repository entry:
+
+```json
+[
+  {
+    "id": "<stable thing id>",
+    "name": "<resolved display name>"
+  }
+]
+```
+
+`GET /api/things/{id}` URL-decodes `id`, returns status `200` for a known
+thing, and uses this JSON schema. `properties` includes only present
+properties; duration values such as `thingInterval` are integer seconds.
+
+```json
+{
+  "id": "<stable thing id>",
+  "name": "<resolved display name>",
+  "properties": {
+    "thingInterval": 5
+  }
+}
+```
+
+An unknown ID returns status `404` with:
+
+```json
+{
+  "error": "thing not found"
+}
+```
+
+Names are loaded when things enter the repository. To override a thing's
+display name in `/var/lib/iotic/iotic.conf`, use its stable ID in a quoted TOML
+key:
+
+```toml
+[things."<id>"]
+name = "Kitchen relay"
+```
 
 ## TCP port scanning
 
