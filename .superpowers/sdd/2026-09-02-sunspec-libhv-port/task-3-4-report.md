@@ -286,3 +286,114 @@ Round 2 commit:
 
 - `a4aaa79fbfdfaa5f45da0aa309a2e32b99ab1bab` — Constrain Modbus session
   close lifecycle
+
+## Round 3 review verification
+
+### 1. Reentrant close lifetime — confirmed and fixed
+
+`close()` invokes `State::requestClose()` through the session's only state
+owner. Before this change, an active request's error callback could reset the
+last `shared_ptr<ModbusSession>`, destroy `State` in the middle of
+`failAll()`, and prevent queued requests from receiving their cancellation.
+`requestClose()` now retains `shared_from_this()` for the complete synchronous
+close path.
+
+The audit found the other completion paths already retain state: queued
+enqueues capture `shared_ptr<State>`, TCP callbacks lock a `weak_ptr` into a
+local strong owner, and both timer handlers do the same. The dedicated timeout
+test access queues a lambda holding `shared_ptr<State>`.
+
+RED:
+
+```sh
+cmake -S . -B build >/dev/null &&
+cmake --build build --target modbus_session_reentrant_close_test -j4 &&
+ctest --test-dir build -R '^modbus_session_reentrant_close_test$' --output-on-failure
+```
+
+The test hung after starting because the first close-error observer destroyed
+the sole session owner and the queued observer was no longer completed. The
+command was stopped after 180 seconds. The regression now destroys the owner
+from the first callback, verifies the weak owner has expired, and verifies the
+queued observer is failed exactly once before the loop stops.
+
+### 2. Normal-library timeout symbol — confirmed and fixed
+
+The round-2 private member still emitted a normal-library symbol. The normal
+`neubau_modbus` build now compiles `ModbusSession.cpp` without any timeout-test
+definitions. A dedicated test-support static library compiles that same source
+with `NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING`; only the dedicated timeout test
+uses it. The ordinary integration session test continues to link
+`neubau::modbus`.
+
+RED:
+
+```sh
+cmake -S . -B build >/dev/null &&
+cmake --build build --target modbus_session_timeout_test -j4
+```
+
+Before adding the dedicated support target, linking failed on the missing
+private `ModbusSession::expireConnectTimeoutForTest()` implementation while
+the normal archive already contained no timeout hook.
+
+GREEN:
+
+```sh
+cmake -S . -B build >/dev/null &&
+cmake --build build --target modbus_session_timeout_test -j4 &&
+ctest --test-dir build -R '^modbus_session_timeout_test$' --output-on-failure &&
+if nm -gU build/src/modbus/libneubau_modbus.a | c++filt | grep -q 'expireConnectTimeout'; then
+    exit 1
+fi
+```
+
+Result: the timeout test passed, 1/1 tests, and `nm` found no
+`expireConnectTimeout` symbol in the normal `neubau_modbus` archive.
+
+### Recovery and final verification
+
+Recovery resumed an interrupted uncommitted round-3 worktree. The appended
+round-3 section already recorded RED evidence for both review findings, so it
+is preserved above; no RED run was recreated against the subsequently fixed
+tree. The reentrant regression was tightened during recovery to count the
+active and queued observers independently, ensuring each close error is
+delivered exactly once after the active observer clears the final session
+owner.
+
+Focused verification:
+
+```sh
+cmake -S . -B build >/dev/null &&
+cmake --build build --target \
+    modbus_session_test \
+    modbus_session_shutdown_test \
+    modbus_session_reentrant_close_test \
+    modbus_session_timeout_test -j4 &&
+ctest --test-dir build \
+    -R '^(modbus_session_test|modbus_session_shutdown_test|modbus_session_reentrant_close_test|modbus_session_timeout_test)$' \
+    --output-on-failure
+```
+
+Result: 4/4 focused Modbus session tests passed, 0 failures.
+
+The timeout test links only `libneubau_modbus_timeout_test_support.a`; the
+ordinary session integration test links only `libneubau_modbus.a`. The support
+target alone has `NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING`, so no target links
+both implementations of `ModbusSession.cpp`.
+
+Full verification:
+
+```sh
+cmake --build build -j4 &&
+ctest --test-dir build --output-on-failure &&
+git diff --check &&
+if nm -gU build/src/modbus/libneubau_modbus.a | c++filt |
+    grep -Eq 'ModbusSessionTestAccess|expireConnectTimeoutForTest'; then
+    exit 1
+fi
+```
+
+Result: 20/20 CTest tests passed, 0 failures; `git diff --check` produced no
+output; and the normal `neubau_modbus` archive exposed neither timeout-test
+access nor an expiry hook symbol.
