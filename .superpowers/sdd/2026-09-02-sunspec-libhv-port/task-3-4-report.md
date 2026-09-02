@@ -208,3 +208,81 @@ Round 1 commit:
 
 - `8ad686b60c98371c053f04f8adc100357d61535c` — Harden Modbus session
   shutdown and tests
+
+## Round 2 review verification
+
+### 1. Reactor-confined close contract — confirmed and fixed
+
+libhv has no nonblocking synchronous primitive that can safely run arbitrary
+session state work from an off-loop caller. `EventLoop::runInLoop()` executes
+inline only when the loop is running on its loop thread; otherwise it posts an
+event. `postEvent()` silently returns once `EventLoop::stop()` has nulled the
+underlying loop. `hloop_init()` records the creating thread as the loop thread,
+so `isInLoopThread()` alone is also true before `run()`: the contract must
+check both `isRunning()` and `isInLoopThread()`.
+
+The repository has no production `ModbusSession` call site. Its session-test
+calls to `close()` occur in Reactor callbacks, including the supported
+`close(); Reactor::stop();` shutdown path. `close()` now throws
+`std::logic_error` off-loop or before/after loop execution and acts
+synchronously only on the running Reactor loop. The destructor no longer
+silently queues a close. The public comment requires close before Reactor
+teardown.
+
+RED:
+
+```sh
+cmake --build build --target modbus_session_shutdown_test -j4 &&
+ctest --test-dir build -R '^modbus_session_shutdown_test$' --output-on-failure
+```
+
+The prior implementation silently accepted the off-loop call; the regression
+failed at `modbus_session_shutdown_test.cpp:33`
+(`rejectedOffLoopClose`). The test now verifies that misuse is rejected and
+that the supported in-loop shutdown cancels active and queued flows exactly
+once, then verifies a later close is also rejected after Reactor teardown.
+
+### 2. Test-only connect timeout access — confirmed and fixed
+
+The normal `modbus::testing::expireConnectTimeout` declaration and externally
+callable free-function symbol were removed. The production header instead
+forward-declares a friend access type; its definition exists only in
+`modbus_session_test.cpp` and invokes a private session test method. No normal
+production caller can name or call the timeout trigger; the endpoint and
+session public operations remain unchanged.
+
+RED:
+
+```sh
+cmake --build build --target modbus_session_test -j4
+```
+
+After the free symbol was removed, linking failed with the expected missing
+private `ModbusSession::expireConnectTimeoutForTest()` definition. Adding that
+private implementation restored deterministic invocation of the same
+`State::onConnectTimeout()` handler used by the production timer.
+
+### Round 2 GREEN evidence
+
+```sh
+cmake --build build --target modbus_session_test modbus_session_shutdown_test -j4 &&
+ctest --test-dir build -R '^(modbus_session_test|modbus_session_shutdown_test)$' --output-on-failure
+```
+
+Result: both focused tests passed, 2/2 tests, 0 failures.
+
+Full verification:
+
+```sh
+cmake --build build -j4 &&
+ctest --test-dir build --output-on-failure &&
+git diff --check
+```
+
+Result: build completed, 18/18 CTest tests passed with 0 failures, and
+`git diff --check` completed without output.
+
+Round 2 commit:
+
+- `a4aaa79fbfdfaa5f45da0aa309a2e32b99ab1bab` — Constrain Modbus session
+  close lifecycle
