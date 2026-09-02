@@ -8,6 +8,7 @@
 #include <chrono>
 #include <future>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -40,6 +41,31 @@ std::vector<std::uint8_t> modbusResponse(
 std::uint16_t requestAddress(const std::uint8_t* request) {
     return static_cast<std::uint16_t>(
         static_cast<std::uint16_t>(request[8]) << 8U | request[9]);
+}
+
+std::vector<std::uint16_t> commonModelRegisters() {
+    std::vector<std::uint16_t> registers(65, 0x2020);
+    const auto encode = [&registers](
+                            std::size_t offset,
+                            std::string_view value) {
+        for (std::size_t index = 0;
+             index < value.size() && index < 32;
+             ++index) {
+            const auto character =
+                static_cast<std::uint8_t>(value[index]);
+            auto& registerValue = registers[offset + index / 2];
+            if (index % 2 == 0) {
+                registerValue = static_cast<std::uint16_t>(
+                    character << 8U | (registerValue & 0xffU));
+            } else {
+                registerValue = static_cast<std::uint16_t>(
+                    (registerValue & 0xff00U) | character);
+            }
+        }
+    };
+    encode(0, "Acme");
+    encode(48, "SN 42");
+    return registers;
 }
 
 } // namespace
@@ -88,11 +114,16 @@ int main() {
             } else {
                 assert(request[7] == 0x03U);
                 assert(buffer->size() >= 12);
+                const auto address = requestAddress(request);
                 response = modbusResponse(
                     request,
                     0x03U,
-                    requestAddress(request) == 40000
+                    address == 40000
                         ? std::vector<std::uint16_t>{0x5375, 0x6e53}
+                        : address == 40002 && request[6] == 2
+                        ? std::vector<std::uint16_t>{1, 65}
+                        : address == 40004 && request[6] == 2
+                        ? commonModelRegisters()
                         : std::vector<std::uint16_t>{0xffff, 0});
             }
             assert(channel->write(
@@ -104,7 +135,7 @@ int main() {
     SunspecDiscovery discovery{SunspecDiscoveryOptions{
         .modbus = {
             .cidrs = {"127.0.0.1/32"},
-            .unitIds = {1},
+            .unitIds = {1, 2},
             .port = port,
             .connectTimeout = std::chrono::milliseconds{10},
             .responseTimeout = std::chrono::milliseconds{10},
@@ -131,7 +162,9 @@ int main() {
         completion.wait_for(std::chrono::seconds{0})
         == std::future_status::ready);
     completion.get();
-    assert(found.empty());
+    assert(found.size() == 1);
+    assert(found.front().modbus.unitId == 2);
+    assert(found.front().id() == "acme__sn_42");
     discovery.stop();
     server.stop();
 }

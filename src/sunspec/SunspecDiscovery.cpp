@@ -306,9 +306,7 @@ private:
     }
 
     void complete() {
-        if (!_state.commonModelDecoded
-            || _state.manufacturer.empty() || _state.model.empty()
-            || _state.serialNumber.empty()) {
+        if (!_state.commonModelDecoded) {
             complete(std::nullopt);
             return;
         }
