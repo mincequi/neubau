@@ -15,6 +15,14 @@ struct ModbusEndpoint {
     std::uint16_t port{};
 };
 
+class ModbusSession;
+
+namespace testing {
+
+void expireConnectTimeout(ModbusSession& session);
+
+} // namespace testing
+
 class ModbusSession {
 public:
     ModbusSession(
@@ -34,6 +42,8 @@ public:
     void close();
 
 private:
+    friend void testing::expireConnectTimeout(ModbusSession& session);
+
     struct State;
     std::shared_ptr<State> _state;
 };

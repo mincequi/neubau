@@ -30,6 +30,7 @@ using neubau::test::ModbusScriptStep;
 using neubau::test::NoReply;
 using neubau::test::ReplyException;
 using neubau::test::ReplyHoldingRegisters;
+using neubau::test::TruncatedReply;
 
 [[nodiscard]] std::string errorMessage(std::exception_ptr error) {
     try {
@@ -198,6 +199,7 @@ private:
             {MalformedReplyKind::wrongUnit, "unit"},
             {MalformedReplyKind::wrongFunction, "function"},
             {MalformedReplyKind::wrongByteCount, "byte count"},
+            {MalformedReplyKind::wrongPayloadLength, "payload length"},
         };
         if (index == std::size(cases)) {
             exceptionOnlyFailsItsMatchingRequest();
@@ -251,22 +253,115 @@ private:
     }
 
     void connectTimeoutIsExplicit() {
-        auto persistent = std::make_shared<ModbusSession>(
-            ModbusEndpoint{"192.0.2.1", 65000},
-            10ms,
-            10ms);
-        _sessions.push_back(persistent);
+        auto fake = server({NoReply{}});
+        auto persistent = session(fake);
         persistent->readHoldingRegisters(11, 70, 1).collect(
             [](const auto&) { assert(false); },
             [self = shared_from_this()](std::exception_ptr error) {
+                self->assertError(error, "connection timed out");
+                self->transportCloseFailsActiveAndQueuedReads();
+            },
+            [] { assert(false); });
+        neubau::modbus::testing::expireConnectTimeout(*persistent);
+    }
+
+    void transportCloseFailsActiveAndQueuedReads() {
+        auto fake = server({
+            CloseConnection{},
+            NoReply{},
+        });
+        auto persistent = session(fake);
+        auto errors = std::make_shared<std::size_t>();
+        const auto closed = [self = shared_from_this(), errors](
+                                std::exception_ptr error) {
+            self->assertError(error, "connection failed");
+            ++*errors;
+            if (*errors == 2) {
+                self->invalidLengthErrorsThenContinuesTheQueue();
+            }
+        };
+        persistent->readHoldingRegisters(12, 80, 1).collect(
+            [](const auto&) { assert(false); },
+            closed,
+            [] { assert(false); });
+        persistent->readHoldingRegisters(12, 81, 1).collect(
+            [](const auto&) { assert(false); },
+            closed,
+            [] { assert(false); });
+    }
+
+    void invalidLengthErrorsThenContinuesTheQueue() {
+        auto fake = server({
+            MalformedReply{MalformedReplyKind::invalidLength},
+            ReplyHoldingRegisters{{0x1234}},
+        });
+        auto persistent = session(fake);
+        persistent->readHoldingRegisters(13, 90, 1).collect(
+            [](const auto&) { assert(false); },
+            [self = shared_from_this()](std::exception_ptr error) {
+                self->assertError(error, "response length");
+            },
+            [] { assert(false); });
+        persistent->readHoldingRegisters(13, 91, 1).collect(
+            [self = shared_from_this()](const auto& registers) {
                 self->assertReactorThread();
-                const auto message = errorMessage(error);
-                assert(
-                    message.find("connection timed out") != std::string::npos
-                    || message.find("connection failed") != std::string::npos);
+                assert(registers == std::vector<std::uint16_t>{0x1234});
+                self->truncatedResponseFailsActiveAndQueuedReads();
+            },
+            [](std::exception_ptr) { assert(false); },
+            [] {});
+    }
+
+    void truncatedResponseFailsActiveAndQueuedReads() {
+        auto fake = server({
+            TruncatedReply{8, {0x5678}},
+            NoReply{},
+        });
+        auto persistent = session(fake);
+        auto errors = std::make_shared<std::size_t>();
+        const auto truncated = [self = shared_from_this(), errors](
+                                   std::exception_ptr error) {
+            self->assertError(error, "connection failed");
+            ++*errors;
+            if (*errors == 2) {
+                self->fakeStopCancelsDelayedWrites();
+            }
+        };
+        persistent->readHoldingRegisters(14, 100, 1).collect(
+            [](const auto&) { assert(false); },
+            truncated,
+            [] { assert(false); });
+        persistent->readHoldingRegisters(14, 101, 1).collect(
+            [](const auto&) { assert(false); },
+            truncated,
+            [] { assert(false); });
+    }
+
+    void fakeStopCancelsDelayedWrites() {
+        auto fake = server({
+            DelayReply{50ms, {0x9999}},
+        });
+        auto persistent = session(fake, 100ms, 100ms);
+        auto delivered = std::make_shared<bool>();
+        persistent->readHoldingRegisters(15, 110, 1).collect(
+            [self = shared_from_this(), delivered](const auto&) {
+                self->assertReactorThread();
+                *delivered = true;
+            },
+            [self = shared_from_this()](std::exception_ptr error) {
+                self->assertError(error, "stopped");
                 self->closeCancelsActiveAndQueuedReads();
             },
             [] { assert(false); });
+        neubau::common::Reactor::loop()->setTimeout(
+            5,
+            [fake](hv::TimerID) { fake->stop(); });
+        neubau::common::Reactor::loop()->setTimeout(
+            75,
+            [persistent, delivered](hv::TimerID) {
+                assert(!*delivered);
+                persistent->close();
+            });
     }
 
     void closeCancelsActiveAndQueuedReads() {
@@ -281,11 +376,11 @@ private:
                 self->countValidationReportsFlowErrors();
             }
         };
-        persistent->readHoldingRegisters(12, 80, 1).collect(
+        persistent->readHoldingRegisters(16, 120, 1).collect(
             [](const auto&) { assert(false); },
             cancelled,
             [] { assert(false); });
-        persistent->readHoldingRegisters(12, 81, 1).collect(
+        persistent->readHoldingRegisters(16, 121, 1).collect(
             [](const auto&) { assert(false); },
             cancelled,
             [] { assert(false); });

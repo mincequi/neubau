@@ -83,8 +83,12 @@ struct ModbusSession::State
 
     void requestClose() {
         auto self = shared_from_this();
-        common::Reactor::loop()->queueInLoop(
-            [self] { self->closeInLoop(); });
+        const auto loop = common::Reactor::loop();
+        if (loop->isInLoopThread()) {
+            closeInLoop();
+            return;
+        }
+        loop->queueInLoop([self] { self->closeInLoop(); });
     }
 
     void enqueueInLoop(Request request) {
@@ -445,6 +449,12 @@ void ModbusSession::close() {
     if (_state) {
         _state->requestClose();
     }
+}
+
+void testing::expireConnectTimeout(ModbusSession& session) {
+    const auto state = session._state;
+    common::Reactor::loop()->queueInLoop(
+        [state] { state->onConnectTimeout(); });
 }
 
 } // namespace neubau::modbus

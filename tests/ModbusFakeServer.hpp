@@ -5,9 +5,11 @@
 #include <hv/TcpServer.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -43,6 +45,11 @@ struct FragmentReply {
     std::vector<std::uint16_t> registers;
 };
 
+struct TruncatedReply {
+    std::size_t size{};
+    std::vector<std::uint16_t> registers;
+};
+
 struct CombinedReplies {
     std::vector<std::vector<std::uint16_t>> replies;
 };
@@ -53,6 +60,7 @@ enum class MalformedReplyKind {
     wrongUnit,
     wrongFunction,
     wrongByteCount,
+    wrongPayloadLength,
     invalidLength,
 };
 
@@ -69,6 +77,7 @@ using ModbusScriptStep = std::variant<
     ReplyException,
     DelayReply,
     FragmentReply,
+    TruncatedReply,
     CombinedReplies,
     MalformedReply,
     CloseConnection,
@@ -89,13 +98,16 @@ public:
         if (_port == 0) {
             throw std::runtime_error("could not allocate fake Modbus port");
         }
+        _server.setThreadNum(0);
         _server.onConnection = [this](const hv::SocketChannelPtr& channel) {
             if (channel->isConnected()) {
+                assert(common::Reactor::loop()->isInLoopThread());
                 ++_connectionCount;
             }
         };
         _server.onMessage =
             [this](const hv::SocketChannelPtr& channel, hv::Buffer* buffer) {
+                assert(common::Reactor::loop()->isInLoopThread());
                 onData(channel, buffer->data(), buffer->size());
             };
     }
@@ -123,6 +135,11 @@ public:
             return;
         }
         _stopped = true;
+        auto timers = std::move(_timers);
+        _timers.clear();
+        for (const auto timer : timers) {
+            common::Reactor::loop()->killTimer(timer);
+        }
         _server.onConnection = nullptr;
         _server.onMessage = nullptr;
         _server.onWriteComplete = nullptr;
@@ -186,14 +203,36 @@ private:
         const hv::SocketChannelPtr& channel,
         std::chrono::milliseconds delay,
         std::vector<std::uint8_t> reply) {
-        common::Reactor::loop()->setTimeout(
+        schedule(delay, [channel, reply = std::move(reply)] {
+            if (channel && !channel->isClosed()) {
+                static_cast<void>(channel->write(
+                    reply.data(), static_cast<int>(reply.size())));
+            }
+        });
+    }
+
+    void schedule(
+        std::chrono::milliseconds delay,
+        std::function<void()> callback) {
+        const auto timer = common::Reactor::loop()->setTimeout(
             static_cast<int>(delay.count()),
-            [channel, reply = std::move(reply)](hv::TimerID) {
-                if (channel && !channel->isClosed()) {
-                    static_cast<void>(channel->write(
-                        reply.data(), static_cast<int>(reply.size())));
+            [this, callback = std::move(callback)](hv::TimerID timer) {
+                std::erase(_timers, timer);
+                if (!_stopped) {
+                    callback();
                 }
             });
+        _timers.push_back(timer);
+    }
+
+    void closeAfter(
+        const hv::SocketChannelPtr& channel,
+        std::chrono::milliseconds delay) {
+        schedule(delay, [channel] {
+            if (channel && !channel->isClosed()) {
+                channel->close();
+            }
+        });
     }
 
     void fragmentReply(
@@ -253,6 +292,13 @@ private:
                 holdingReply(request, fragmented->registers));
             return;
         }
+        if (const auto* truncated = std::get_if<TruncatedReply>(&step)) {
+            auto reply = holdingReply(request, truncated->registers);
+            reply.resize(std::min(reply.size(), truncated->size));
+            writeAfter(channel, std::chrono::milliseconds{1}, std::move(reply));
+            closeAfter(channel, std::chrono::milliseconds{2});
+            return;
+        }
         if (const auto* combined = std::get_if<CombinedReplies>(&step)) {
             std::vector<std::uint8_t> replies;
             auto transaction = request.transactionId;
@@ -283,6 +329,12 @@ private:
                 break;
             case MalformedReplyKind::wrongByteCount:
                 reply[8] = static_cast<std::uint8_t>(reply[8] + 2U);
+                break;
+            case MalformedReplyKind::wrongPayloadLength:
+                reply.push_back(0);
+                writeU16(
+                    reply.data() + 4,
+                    static_cast<std::uint16_t>(readU16(reply.data() + 4) + 1));
                 break;
             case MalformedReplyKind::invalidLength:
                 writeU16(reply.data() + 4, 2);
@@ -330,6 +382,7 @@ private:
     hv::TcpServerEventLoopTmpl<> _server;
     std::vector<std::uint8_t> _received;
     std::vector<ModbusRequest> _requests;
+    std::vector<hv::TimerID> _timers;
     std::size_t _nextStep{};
     std::size_t _connectionCount{};
     std::uint16_t _port{};
