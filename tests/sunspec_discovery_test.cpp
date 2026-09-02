@@ -2,10 +2,47 @@
 
 #include "common/Reactor.hpp"
 
+#include <hv/TcpServer.h>
+
 #include <cassert>
 #include <chrono>
 #include <future>
+#include <memory>
 #include <vector>
+
+namespace {
+
+std::vector<std::uint8_t> modbusResponse(
+    const std::uint8_t* request,
+    std::uint8_t function,
+    const std::vector<std::uint16_t>& registers = {}) {
+    std::vector<std::uint8_t> response{
+        request[0], request[1], request[2], request[3]};
+    const auto length = static_cast<std::uint16_t>(
+        3 + registers.size() * sizeof(std::uint16_t));
+    response.push_back(static_cast<std::uint8_t>(length >> 8U));
+    response.push_back(static_cast<std::uint8_t>(length & 0xffU));
+    response.push_back(request[6]);
+    response.push_back(function);
+    if (function == 0x03U) {
+        response.push_back(static_cast<std::uint8_t>(
+            registers.size() * sizeof(std::uint16_t)));
+        for (const auto value : registers) {
+            response.push_back(static_cast<std::uint8_t>(value >> 8U));
+            response.push_back(static_cast<std::uint8_t>(value & 0xffU));
+        }
+    } else {
+        response.push_back(0x01U);
+    }
+    return response;
+}
+
+std::uint16_t requestAddress(const std::uint8_t* request) {
+    return static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(request[8]) << 8U | request[9]);
+}
+
+} // namespace
 
 int main() {
     using neubau::sunspec::SunspecDiscovery;
@@ -31,13 +68,44 @@ int main() {
         {},
         "SN 42",
     };
-    assert(sunspec.id() == "acme_co___inverter_1__sn_42");
+    assert(sunspec.id() == "acme_co__inverter_1_sn_42");
+
+    hv::TcpServerEventLoopTmpl<> server{neubau::common::Reactor::loop()};
+    std::uint16_t port = 62000;
+    while (port < 63000 && server.createsocket(port, "127.0.0.1") < 0) {
+        ++port;
+    }
+    assert(port < 63000);
+    server.onMessage =
+        [](const hv::SocketChannelPtr& channel, hv::Buffer* buffer) {
+            const auto* request =
+                static_cast<const std::uint8_t*>(buffer->data());
+            assert(buffer->size() >= 8);
+
+            std::vector<std::uint8_t> response;
+            if (request[7] == 0x2bU) {
+                response = modbusResponse(request, 0xabU);
+            } else {
+                assert(request[7] == 0x03U);
+                assert(buffer->size() >= 12);
+                response = modbusResponse(
+                    request,
+                    0x03U,
+                    requestAddress(request) == 40000
+                        ? std::vector<std::uint16_t>{0x5375, 0x6e53}
+                        : std::vector<std::uint16_t>{0xffff, 0});
+            }
+            assert(channel->write(
+                       response.data(),
+                       static_cast<int>(response.size()))
+                   >= 0);
+        };
 
     SunspecDiscovery discovery{SunspecDiscoveryOptions{
         .modbus = {
             .cidrs = {"127.0.0.1/32"},
             .unitIds = {1},
-            .port = 65000,
+            .port = port,
             .connectTimeout = std::chrono::milliseconds{10},
             .responseTimeout = std::chrono::milliseconds{10},
             .maxConcurrency = 1,
@@ -56,6 +124,7 @@ int main() {
             completed.set_value();
             neubau::common::Reactor::stop();
         });
+    server.start();
     discovery.start();
     neubau::common::Reactor::run();
     assert(
@@ -63,4 +132,6 @@ int main() {
         == std::future_status::ready);
     completion.get();
     assert(found.empty());
+    discovery.stop();
+    server.stop();
 }

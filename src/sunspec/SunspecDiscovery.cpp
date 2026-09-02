@@ -82,8 +82,8 @@ std::string sunspecThingId(
     std::string_view manufacturer,
     std::string_view product,
     std::string_view serialNumber) {
-    return normalizeIdentityPart(manufacturer) + "__"
-        + normalizeIdentityPart(product) + "__"
+    return normalizeIdentityPart(manufacturer) + "_"
+        + normalizeIdentityPart(product) + "_"
         + normalizeIdentityPart(serialNumber);
 }
 
@@ -283,6 +283,7 @@ private:
                     self->_state.version = decodeString(common, 40, 8);
                     self->_state.serialNumber =
                         decodeString(common, 48, 16);
+                    self->_state.commonModelDecoded = true;
                     self->advance(modelLength);
                 },
                 [self, modelLength] { self->advance(modelLength); });
@@ -305,6 +306,12 @@ private:
     }
 
     void complete() {
+        if (!_state.commonModelDecoded
+            || _state.manufacturer.empty() || _state.model.empty()
+            || _state.serialNumber.empty()) {
+            complete(std::nullopt);
+            return;
+        }
         complete(SunspecThing{
             _modbusThing,
             _state.baseAddress,
@@ -322,6 +329,7 @@ private:
         std::uint16_t baseAddress{};
         std::vector<std::uint16_t> modelIds;
         bool completeModelChain{};
+        bool commonModelDecoded{};
         std::string manufacturer;
         std::string model;
         std::string options;

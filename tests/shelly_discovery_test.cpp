@@ -32,6 +32,13 @@ int main() {
     assert(thing.generation() == "2");
     assert(thing.firmwareVersion() == "1.0.0");
 
+    auto fallbackService = service;
+    fallbackService.txt.erase("id");
+    const neubau::shelly::ShellyThing fallback{fallbackService};
+    assert(
+        static_cast<const neubau::common::Thing&>(fallback).id()
+        == "shellyplus1pm-aabbcc");
+
     std::ostringstream output;
     output << thing;
     assert(output.str().find("192.168.1.10:80") != std::string::npos);
