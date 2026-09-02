@@ -1,4 +1,8 @@
-add_library(neubau_modbus ModbusDiscovery.cpp)
+add_library(
+    neubau_modbus
+    ModbusDiscovery.cpp
+    ModbusSession.cpp
+)
 add_library(neubau::modbus ALIAS neubau_modbus)
 
 target_include_directories(

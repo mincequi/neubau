@@ -59,6 +59,11 @@ target_link_libraries(modbus_discovery_test PRIVATE neubau::modbus)
 
 add_test(NAME modbus_discovery_test COMMAND modbus_discovery_test)
 
+add_executable(modbus_session_test modbus_session_test.cpp)
+target_link_libraries(modbus_session_test PRIVATE neubau::modbus)
+
+add_test(NAME modbus_session_test COMMAND modbus_session_test)
+
 add_executable(sunspec_discovery_test sunspec_discovery_test.cpp)
 target_link_libraries(sunspec_discovery_test PRIVATE neubau::sunspec)
 
