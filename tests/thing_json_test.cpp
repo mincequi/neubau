@@ -78,4 +78,19 @@ int main() {
             "name":"Garage",
             "properties":{"thingInterval":5}
         })"));
+
+    fixture.first->setProperty<PropertyKey::thingInterval>(
+        Seconds{6});
+
+    assert(
+        fixture.first->propertySnapshot()
+            .get<PropertyKey::thingInterval>()
+        == Seconds{6});
+    assert(
+        thingJson(*fixture.first)
+        == hv::Json::parse(R"({
+            "id":"thing-1",
+            "name":"Garage",
+            "properties":{"thingInterval":6}
+        })"));
 }

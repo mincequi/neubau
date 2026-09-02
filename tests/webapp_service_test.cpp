@@ -49,11 +49,17 @@ struct Fixture {
 
         persistence.saveThingName("thing-1", "Garage");
         persistence.saveThingName("modbus/device-2", "Boiler");
+        persistence.saveThingName("raw+plus", "Raw plus");
+        persistence.saveThingName("encoded+plus", "Encoded plus");
 
         repository.add(
             std::make_shared<neubau::common::Thing>("thing-1"));
         repository.add(
             std::make_shared<neubau::common::Thing>("modbus/device-2"));
+        repository.add(
+            std::make_shared<neubau::common::Thing>("raw+plus"));
+        repository.add(
+            std::make_shared<neubau::common::Thing>("encoded+plus"));
         repository.find("thing-1")
             ->setProperty<neubau::common::PropertyKey::thingInterval>(
                 neubau::common::Seconds{5});
@@ -243,7 +249,9 @@ int main() {
                 200,
                 hv::Json::parse(R"([
                     {"id":"thing-1","name":"Garage"},
-                    {"id":"modbus/device-2","name":"Boiler"}
+                    {"id":"modbus/device-2","name":"Boiler"},
+                    {"id":"raw+plus","name":"Raw plus"},
+                    {"id":"encoded+plus","name":"Encoded plus"}
                 ])"));
 
             fixture.repository.add(
@@ -257,6 +265,8 @@ int main() {
                         hv::Json::parse(R"([
                             {"id":"thing-1","name":"Garage"},
                             {"id":"modbus/device-2","name":"Boiler"},
+                            {"id":"raw+plus","name":"Raw plus"},
+                            {"id":"encoded+plus","name":"Encoded plus"},
                             {"id":"thing-3","name":"thing-3"}
                         ])"));
 
@@ -273,30 +283,71 @@ int main() {
                                 })"));
 
                             get(
-                                "/api/things/modbus%2Fdevice-2",
+                                "/api/things/raw+plus",
                                 [&get](
-                                    const HttpResponse&
-                                        encodedIdResponse) {
+                                    const HttpResponse& rawPlusResponse) {
                                     assertJsonResponse(
-                                        encodedIdResponse,
+                                        rawPlusResponse,
                                         200,
                                         hv::Json::parse(R"({
-                                            "id":"modbus/device-2",
-                                            "name":"Boiler",
+                                            "id":"raw+plus",
+                                            "name":"Raw plus",
                                             "properties":{}
                                         })"));
 
                                     get(
-                                        "/api/things/missing",
-                                        [](
+                                        "/api/things/encoded%2Bplus",
+                                        [&get](
                                             const HttpResponse&
-                                                missingResponse) {
+                                                encodedPlusResponse) {
                                             assertJsonResponse(
-                                                missingResponse,
-                                                404,
-                                                hv::Json::parse(
-                                                    R"({"error":"thing not found"})"));
-                                            neubau::common::Reactor::stop();
+                                                encodedPlusResponse,
+                                                200,
+                                                hv::Json::parse(R"({
+                                                    "id":"encoded+plus",
+                                                    "name":"Encoded plus",
+                                                    "properties":{}
+                                                })"));
+
+                                            get(
+                                                "/api/things/modbus%2Fdevice-2",
+                                                [&get](
+                                                    const HttpResponse&
+                                                        encodedSlashResponse) {
+                                                    assertJsonResponse(
+                                                        encodedSlashResponse,
+                                                        200,
+                                                        hv::Json::parse(R"({
+                                            "id":"modbus/device-2",
+                                            "name":"Boiler",
+                                            "properties":{}
+                                                        })"));
+
+                                                    get(
+                                                        "/api/things/bad%2",
+                                                        [&get](
+                                                            const HttpResponse&
+                                                                malformedResponse) {
+                                                            assertJsonResponse(
+                                                                malformedResponse,
+                                                                400,
+                                                                hv::Json::parse(
+                                                                    R"({"error":"invalid thing id encoding"})"));
+
+                                                            get(
+                                                                "/api/things/missing",
+                                                                [](
+                                                                    const HttpResponse&
+                                                                        missingResponse) {
+                                                                    assertJsonResponse(
+                                                                        missingResponse,
+                                                                        404,
+                                                                        hv::Json::parse(
+                                                                            R"({"error":"thing not found"})"));
+                                                                    neubau::common::Reactor::stop();
+                                                                });
+                                                        });
+                                                });
                                         });
                                 });
                         });

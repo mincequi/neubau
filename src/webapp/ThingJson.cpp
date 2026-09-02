@@ -3,7 +3,6 @@
 #include "common/PropertyMap.hpp"
 
 #include <cstdint>
-#include <stdexcept>
 #include <type_traits>
 
 namespace neubau::webapp {
@@ -24,26 +23,6 @@ inline constexpr bool alwaysFalse = false;
     }
 }
 
-[[nodiscard]] common::PropertyMap propertySnapshot(
-    const common::Thing& thing) {
-    common::PropertyMap snapshot;
-    bool captured = false;
-    thing.properties().collect(
-        [&snapshot, &captured](const common::PropertyMap& properties) {
-            if (!captured) {
-                snapshot = properties;
-                captured = true;
-            }
-        });
-
-    if (!captured) {
-        throw std::logic_error{
-            "thing properties flow did not emit a snapshot"};
-    }
-
-    return snapshot;
-}
-
 } // namespace
 
 hv::Json thingSummaryJson(const common::Thing& thing) {
@@ -57,7 +36,7 @@ hv::Json thingJson(const common::Thing& thing) {
     auto json = thingSummaryJson(thing);
     auto propertiesJson = hv::Json::object();
 
-    propertySnapshot(thing).forEach(
+    thing.propertySnapshot().forEach(
         [&propertiesJson]<common::PropertyKey Key>(
             std::integral_constant<common::PropertyKey, Key>,
             const auto& value) {

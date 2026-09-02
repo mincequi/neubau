@@ -96,6 +96,11 @@ public:
         return _propertiesFlow;
     }
 
+    [[nodiscard]] const PropertyMap& propertySnapshot()
+        const noexcept {
+        return _properties;
+    }
+
 private:
     friend class ThingRepository;
 
