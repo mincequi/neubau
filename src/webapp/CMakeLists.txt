@@ -5,7 +5,7 @@ cmrc_add_resource_library(
     index.html
 )
 
-add_library(neubau_webapp WebAppService.cpp ThingJson.cpp)
+add_library(neubau_webapp WebAppService.cpp ThingApi.cpp ThingJson.cpp)
 add_library(neubau::webapp ALIAS neubau_webapp)
 
 target_include_directories(

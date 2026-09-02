@@ -1,6 +1,7 @@
 #include "webapp/WebAppService.hpp"
 
 #include "common/Reactor.hpp"
+#include "webapp/ThingApi.hpp"
 
 #include <cmrc/cmrc.hpp>
 #include <hv/WebSocketServer.h>
@@ -37,6 +38,9 @@ int WebAppService::run(std::function<void()> onStarted) {
     service.GET("/health", [](HttpRequest*, HttpResponse* response) {
         return response->String("ok\n");
     });
+
+    ThingApi api{_things};
+    api.registerRoutes(service);
 
     hv::WebSocketService websocket;
     websocket.onopen = [](
