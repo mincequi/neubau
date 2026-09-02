@@ -1,4 +1,8 @@
-add_library(neubau_sunspec SunspecDiscovery.cpp)
+add_library(
+    neubau_sunspec
+    SunspecDiscovery.cpp
+    SunspecIdentity.cpp
+)
 add_library(neubau::sunspec ALIAS neubau_sunspec)
 
 target_include_directories(

@@ -64,6 +64,11 @@ target_link_libraries(sunspec_discovery_test PRIVATE neubau::sunspec)
 
 add_test(NAME sunspec_discovery_test COMMAND sunspec_discovery_test)
 
+add_executable(sunspec_identity_test sunspec_identity_test.cpp)
+target_link_libraries(sunspec_identity_test PRIVATE neubau::sunspec)
+
+add_test(NAME sunspec_identity_test COMMAND sunspec_identity_test)
+
 add_executable(webapp_service_test webapp_service_test.cpp)
 target_link_libraries(webapp_service_test PRIVATE neubau::webapp)
 
