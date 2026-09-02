@@ -81,5 +81,5 @@ artifacts were removed afterwards.
 
 ## Commit
 
-`Publish discovered SunSpec things` (the resulting SHA is reported with Task
-8 completion).
+- `3ee77edcec6c6495c9af8c3f8debba7e5a3355fa` — Publish discovered SunSpec
+  things
