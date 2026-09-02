@@ -30,6 +30,7 @@ using neubau::test::ModbusScriptStep;
 using neubau::test::NoReply;
 using neubau::test::ReplyException;
 using neubau::test::ReplyHoldingRegisters;
+using neubau::test::ReplyHoldingRegistersThenClose;
 using neubau::test::TruncatedReply;
 
 [[nodiscard]] std::string errorMessage(std::exception_ptr error) {
@@ -247,9 +248,38 @@ private:
             [](const auto&) { assert(false); },
             [self = shared_from_this()](std::exception_ptr error) {
                 self->assertError(error, "response timed out");
-                self->transportCloseFailsActiveAndQueuedReads();
+                self->peerCloseAfterCompletedReadMakesSessionTerminal();
             },
             [] { assert(false); });
+    }
+
+    void peerCloseAfterCompletedReadMakesSessionTerminal() {
+        auto fake = server({
+            ReplyHoldingRegistersThenClose{{0xcafe}},
+            ReplyHoldingRegisters{{0xbabe}},
+        });
+        auto persistent = session(fake);
+        persistent->readHoldingRegisters(11, 70, 1).collect(
+            [self = shared_from_this(), persistent, fake](
+                const auto& registers) {
+                self->assertReactorThread();
+                assert(registers == std::vector<std::uint16_t>{0xcafe});
+                neubau::common::Reactor::loop()->setTimeout(
+                    5,
+                    [self, persistent, fake](hv::TimerID) {
+                        persistent->readHoldingRegisters(11, 71, 1).collect(
+                            [](const auto&) { assert(false); },
+                            [self, fake](std::exception_ptr error) {
+                                self->assertError(error, "stopped");
+                                assert(fake->requests().size() == 1);
+                                assert(fake->connectionCount() == 1);
+                                self->transportCloseFailsActiveAndQueuedReads();
+                            },
+                            [] { assert(false); });
+                    });
+            },
+            [](std::exception_ptr) { assert(false); },
+            [] {});
     }
 
     void transportCloseFailsActiveAndQueuedReads() {

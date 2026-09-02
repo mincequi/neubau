@@ -168,9 +168,10 @@ struct ModbusSession::State
             return;
         }
 
+        const auto wasConnected = _connected;
         _connecting = false;
         _connected = false;
-        if (_active) {
+        if (wasConnected || _active) {
             failAll(error("Modbus TCP connection failed"));
         }
     }
@@ -313,7 +314,10 @@ struct ModbusSession::State
         _awaitingResponse = false;
         auto request = std::move(*_active);
         _active.reset();
-        request.success(std::move(registers));
+        auto success = std::move(request.success);
+        common::Reactor::loop()->queueInLoop(
+            [success = std::move(success), registers = std::move(registers)]()
+                mutable { success(std::move(registers)); });
         if (!_closed) {
             startNext();
         }

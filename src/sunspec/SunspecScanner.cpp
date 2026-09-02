@@ -32,8 +32,9 @@ void SunspecScanControl::cancel() {
         return;
     }
     _cancelled = true;
-    if (_cancellation) {
-        _cancellation();
+    const auto cancellation = _cancellation;
+    if (cancellation) {
+        cancellation();
     }
 }
 
@@ -44,8 +45,9 @@ void SunspecScanControl::bind(std::function<void()> cancellation) {
             "SunSpec scan controls must bind on the Reactor loop");
     }
     _cancellation = std::move(cancellation);
-    if (_cancelled && _cancellation) {
-        _cancellation();
+    const auto currentCancellation = _cancellation;
+    if (_cancelled && currentCancellation) {
+        currentCancellation();
     }
 }
 
@@ -105,6 +107,16 @@ public:
     }
 
     void start() { next(); }
+
+    void cancel() {
+        if (_finished) {
+            return;
+        }
+        _finished = true;
+        _session.reset();
+        _success = nullptr;
+        _failure = nullptr;
+    }
 
 private:
     void next() {
@@ -218,10 +230,9 @@ private:
     };
 
     void startInLoop() {
-        _bindCancellation([weak = weak_from_this()] {
-            if (const auto self = weak.lock()) {
-                self->cancelInLoop();
-            }
+        const auto self = shared_from_this();
+        _bindCancellation([self] {
+            self->cancelInLoop();
         });
         if (_finished) {
             return;
@@ -242,13 +253,19 @@ private:
         }
 
         const auto unitId = unitIds[_unitIndex];
-        const auto self = shared_from_this();
+        const auto weak = weak_from_this();
         static_cast<void>(
             _session->readHoldingRegisters(unitId, 40000, 4).collect(
-                [self, unitId](std::vector<std::uint16_t> registers) {
-                    self->onProbeResponse(unitId, std::move(registers));
+                [weak, unitId](std::vector<std::uint16_t> registers) {
+                    if (const auto self = weak.lock()) {
+                        self->onProbeResponse(unitId, std::move(registers));
+                    }
                 },
-                [self](std::exception_ptr) { self->onProbeFailure(); },
+                [weak](std::exception_ptr) {
+                    if (const auto self = weak.lock()) {
+                        self->onProbeFailure();
+                    }
+                },
                 [] {}));
     }
 
@@ -258,8 +275,16 @@ private:
         if (_finished) {
             return;
         }
+
         if (!isSunspecHeader(registers)) {
-            advanceUnit();
+            if (_session->isClosed()) {
+                if (!replaceClosedSession()) {
+                    return;
+                }
+                advanceUnit();
+                return;
+            }
+            advanceUnit(true);
             return;
         }
 
@@ -279,8 +304,15 @@ private:
         if (_finished) {
             return;
         }
-        if (_session->isClosed() && !replaceClosedSession()) {
-            return;
+        if (_session->isClosed()) {
+            if (!replaceClosedSession()) {
+                return;
+            }
+            if (_retryCurrentUnitOnClosed) {
+                _retryCurrentUnitOnClosed = false;
+                probeNextUnit();
+                return;
+            }
         }
         advanceUnit();
     }
@@ -326,6 +358,7 @@ private:
             count,
             std::move(success),
             std::move(failure));
+        _activeReader = reader;
         reader->start();
     }
 
@@ -468,21 +501,25 @@ private:
         return false;
     }
 
-    void advanceUnit() {
+    void advanceUnit(bool retryCurrentUnitOnClosed = false) {
         ++_unitIndex;
+        _retryCurrentUnitOnClosed = retryCurrentUnitOnClosed;
         probeNextUnit();
     }
 
     void cancelInLoop() {
-        if (_finished) {
-            return;
+        complete();
+    }
+
+    void releaseResources() {
+        if (_activeReader) {
+            _activeReader->cancel();
+            _activeReader.reset();
         }
-        _finished = true;
-        const auto session = _session;
-        if (!session->isClosed()) {
-            session->close();
+        auto bindCancellation = std::move(_bindCancellation);
+        if (bindCancellation) {
+            bindCancellation({});
         }
-        _completeObserver();
     }
 
     void emit() {
@@ -501,8 +538,16 @@ private:
             std::move(_version),
             std::move(_serialNumber),
         };
-        _nextObserver(std::move(thing));
-        _completeObserver();
+        releaseResources();
+        auto nextObserver = std::move(_nextObserver);
+        auto completeObserver = std::move(_completeObserver);
+        _errorObserver = nullptr;
+        if (nextObserver) {
+            nextObserver(std::move(thing));
+        }
+        if (completeObserver) {
+            completeObserver();
+        }
     }
 
     void complete() {
@@ -510,7 +555,13 @@ private:
             return;
         }
         _finished = true;
-        _completeObserver();
+        releaseResources();
+        auto completeObserver = std::move(_completeObserver);
+        _nextObserver = nullptr;
+        _errorObserver = nullptr;
+        if (completeObserver) {
+            completeObserver();
+        }
     }
 
     void fail(std::exception_ptr error) {
@@ -518,7 +569,13 @@ private:
             return;
         }
         _finished = true;
-        _errorObserver(std::move(error));
+        releaseResources();
+        auto errorObserver = std::move(_errorObserver);
+        _nextObserver = nullptr;
+        _completeObserver = nullptr;
+        if (errorObserver) {
+            errorObserver(std::move(error));
+        }
     }
 
     std::shared_ptr<modbus::ModbusSession> _session;
@@ -528,6 +585,7 @@ private:
     std::function<void(SunspecThing)> _nextObserver;
     std::function<void()> _completeObserver;
     std::function<void(std::exception_ptr)> _errorObserver;
+    std::shared_ptr<LogicalRegisterReader> _activeReader;
     std::optional<SelectedHeader> _selectedHeader;
     std::vector<ModelLocation> _locations;
     std::map<std::uint16_t, std::uint32_t> _instances;
@@ -538,6 +596,7 @@ private:
     std::string _serialNumber;
     std::uint32_t _currentAddress{};
     std::size_t _unitIndex{};
+    bool _retryCurrentUnitOnClosed{};
     bool _finished{};
 };
 

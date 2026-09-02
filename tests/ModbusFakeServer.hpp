@@ -31,6 +31,10 @@ struct ReplyHoldingRegisters {
     std::vector<std::uint16_t> registers;
 };
 
+struct ReplyHoldingRegistersThenClose {
+    std::vector<std::uint16_t> registers;
+};
+
 struct ReplyException {
     std::uint8_t exceptionCode{};
 };
@@ -74,6 +78,7 @@ struct NoReply {};
 
 using ModbusScriptStep = std::variant<
     ReplyHoldingRegisters,
+    ReplyHoldingRegistersThenClose,
     ReplyException,
     DelayReply,
     FragmentReply,
@@ -249,6 +254,19 @@ private:
         });
     }
 
+    void writeAndCloseAfter(
+        const hv::SocketChannelPtr& channel,
+        std::chrono::milliseconds delay,
+        std::vector<std::uint8_t> reply) {
+        schedule(delay, [channel, reply = std::move(reply)] {
+            if (channel && !channel->isClosed()) {
+                static_cast<void>(channel->write(
+                    reply.data(), static_cast<int>(reply.size())));
+                channel->close();
+            }
+        });
+    }
+
     void schedule(
         std::chrono::milliseconds delay,
         std::function<void()> callback) {
@@ -309,6 +327,14 @@ private:
         if (const auto* holding = std::get_if<ReplyHoldingRegisters>(&step)) {
             writeAfter(channel, std::chrono::milliseconds{1}, holdingReply(
                 request, holding->registers));
+            return;
+        }
+        if (const auto* holdingThenClose =
+                std::get_if<ReplyHoldingRegistersThenClose>(&step)) {
+            writeAndCloseAfter(
+                channel,
+                std::chrono::milliseconds{1},
+                holdingReply(request, holdingThenClose->registers));
             return;
         }
         if (const auto* exception = std::get_if<ReplyException>(&step)) {
