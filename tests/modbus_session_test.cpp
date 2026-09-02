@@ -14,6 +14,17 @@
 #include <utility>
 #include <vector>
 
+namespace neubau::modbus::testing {
+
+class ModbusSessionTestAccess {
+public:
+    static void expireConnectTimeout(ModbusSession& session) {
+        session.expireConnectTimeoutForTest();
+    }
+};
+
+} // namespace neubau::modbus::testing
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -262,7 +273,8 @@ private:
                 self->transportCloseFailsActiveAndQueuedReads();
             },
             [] { assert(false); });
-        neubau::modbus::testing::expireConnectTimeout(*persistent);
+        neubau::modbus::testing::ModbusSessionTestAccess::
+            expireConnectTimeout(*persistent);
     }
 
     void transportCloseFailsActiveAndQueuedReads() {

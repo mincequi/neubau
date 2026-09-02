@@ -21,6 +21,17 @@ int main() {
         neubau::modbus::ModbusEndpoint{"127.0.0.1", server->port()},
         100ms,
         100ms);
+    bool rejectedOffLoopClose{};
+    try {
+        session->close();
+    } catch (const std::logic_error& error) {
+        assert(
+            std::string{error.what()}.find("Reactor loop")
+            != std::string::npos);
+        rejectedOffLoopClose = true;
+    }
+    assert(rejectedOffLoopClose);
+
     std::size_t cancellations{};
     const auto cancelled = [&cancellations](std::exception_ptr error) {
         try {
@@ -50,4 +61,16 @@ int main() {
     neubau::common::Reactor::run();
     assert(cancellations == 2);
     server->stop();
+
+    neubau::modbus::ModbusSession afterTeardown{
+        neubau::modbus::ModbusEndpoint{"127.0.0.1", server->port()},
+        100ms,
+        100ms};
+    bool rejectedAfterTeardown{};
+    try {
+        afterTeardown.close();
+    } catch (const std::logic_error&) {
+        rejectedAfterTeardown = true;
+    }
+    assert(rejectedAfterTeardown);
 }

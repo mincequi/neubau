@@ -82,13 +82,12 @@ struct ModbusSession::State
     }
 
     void requestClose() {
-        auto self = shared_from_this();
         const auto loop = common::Reactor::loop();
-        if (loop->isInLoopThread()) {
-            closeInLoop();
-            return;
+        if (!loop->isRunning() || !loop->isInLoopThread()) {
+            throw std::logic_error(
+                "Modbus session must be closed on the Reactor loop");
         }
-        loop->queueInLoop([self] { self->closeInLoop(); });
+        closeInLoop();
     }
 
     void enqueueInLoop(Request request) {
@@ -412,9 +411,7 @@ ModbusSession::ModbusSession(
     }
 }
 
-ModbusSession::~ModbusSession() {
-    close();
-}
+ModbusSession::~ModbusSession() = default;
 
 common::Flow<Registers> ModbusSession::readHoldingRegisters(
     std::uint8_t unitId,
@@ -451,8 +448,8 @@ void ModbusSession::close() {
     }
 }
 
-void testing::expireConnectTimeout(ModbusSession& session) {
-    const auto state = session._state;
+void ModbusSession::expireConnectTimeoutForTest() {
+    const auto state = _state;
     common::Reactor::loop()->queueInLoop(
         [state] { state->onConnectTimeout(); });
 }

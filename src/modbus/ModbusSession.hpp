@@ -19,7 +19,7 @@ class ModbusSession;
 
 namespace testing {
 
-void expireConnectTimeout(ModbusSession& session);
+class ModbusSessionTestAccess;
 
 } // namespace testing
 
@@ -39,12 +39,15 @@ public:
         std::uint8_t unitId,
         std::uint16_t address,
         std::uint16_t count);
+
+    // Must be called on the Reactor loop before Reactor teardown.
     void close();
 
 private:
-    friend void testing::expireConnectTimeout(ModbusSession& session);
+    friend class testing::ModbusSessionTestAccess;
 
     struct State;
+    void expireConnectTimeoutForTest();
     std::shared_ptr<State> _state;
 };
 
