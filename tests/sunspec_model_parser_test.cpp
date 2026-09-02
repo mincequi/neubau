@@ -84,11 +84,10 @@ int main() {
             == test.events);
     }
 
-    constexpr std::array<std::uint16_t, 49> mppt160{
+    constexpr std::array<std::uint16_t, 48> mppt160{
         0xffff, 1, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 123, 230, 456, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0xffff, 0xffff, 0xffff, 0, 0, 0, 0, 0, 0, 0, 0,
-        0,
     };
     const auto& mpptModel = parsed(parseModel(160, mppt160, "Acme"), 160);
     const auto& dc = std::get<std::vector<SunSpecBlock<double>>>(
@@ -156,18 +155,20 @@ int main() {
     constexpr std::array<std::uint16_t, 49> shortInverter{};
     constexpr std::array<std::uint16_t, 51> longInverter{};
     constexpr std::array<std::uint16_t, 7> shortMppt{};
+    constexpr std::array<std::uint16_t, 49> incompleteMppt{};
     constexpr std::array<std::uint16_t, 104> shortMeter{};
     constexpr std::array<std::uint16_t, 106> longMeter{};
     struct InvalidCase {
         std::uint16_t id;
         std::span<const std::uint16_t> registers;
     };
-    const std::array<InvalidCase, 7> invalidCases{{
+    const std::array<InvalidCase, 8> invalidCases{{
         {101, shortInverter},
         {103, shortInverter},
         {101, longInverter},
         {103, longInverter},
         {160, shortMppt},
+        {160, incompleteMppt},
         {203, shortMeter},
         {203, longMeter},
     }};

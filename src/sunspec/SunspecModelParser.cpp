@@ -114,7 +114,7 @@ constexpr std::uint16_t unavailable = 0xffff;
 
 [[nodiscard]] std::optional<SunspecModel> parseMppt(
     std::span<const std::uint16_t> registers) {
-    if (registers.size() < 8) {
+    if (registers.size() < 8 || (registers.size() - 8) % 20 != 0) {
         return std::nullopt;
     }
 
