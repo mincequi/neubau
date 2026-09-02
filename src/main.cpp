@@ -1,16 +1,20 @@
+#include "common/DiscoveryRepository.hpp"
 #include <plog/Appenders/ColorConsoleAppender.h>
 #include <plog/Formatters/TxtFormatter.h>
 #include <plog/Init.h>
 #include <plog/Log.h>
 
-#include "common/ThingRepository.hpp"
 #include "common/Persistence.hpp"
+#include "common/ThingRepository.hpp"
 #include "mdns/MdnsDiscovery.hpp"
+#include "modbus/ModbusDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
+#include "sunspec/SunspecDiscovery.hpp"
 #include "webapp/WebAppService.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -134,14 +138,69 @@ int main() {
                 std::make_shared<decltype(activeShellySubscription)>(
                     std::move(activeShellySubscription));
 
+            std::shared_ptr<neubau::sunspec::SunspecDiscovery>
+                sunspecDiscovery;
+            std::shared_ptr<
+                rpp::composite_disposable_wrapper> sunspecSubscription;
+            if (const auto cidr =
+                    neubau::modbus::ModbusDiscovery::primaryIpv4Cidr(24)) {
+                sunspecDiscovery =
+                    std::make_shared<neubau::sunspec::SunspecDiscovery>(
+                        neubau::sunspec::SunspecDiscoveryOptions{
+                            .modbus = {
+                                .cidrs = {*cidr},
+                                .port = 502,
+                                .connectTimeout =
+                                    std::chrono::milliseconds{250},
+                                .responseTimeout =
+                                    std::chrono::milliseconds{500},
+                                .maxConcurrency = 32,
+                                .maxHosts = 4096,
+                            },
+                            .maxModels = 256,
+                            .maxRegisterSpan = 10000,
+                        });
+                auto activeSunspecSubscription =
+                    neubau::common::addCandidatesToRepository(
+                        *sunspecDiscovery,
+                        things,
+                        [](std::exception_ptr error) {
+                            try {
+                                std::rethrow_exception(error);
+                            } catch (const std::exception& exception) {
+                                PLOGE << "SunSpec discovery failed: "
+                                      << exception.what();
+                            }
+                        },
+                        [] { PLOGI << "SunSpec discovery stopped"; });
+                sunspecSubscription =
+                    std::make_shared<decltype(activeSunspecSubscription)>(
+                        std::move(activeSunspecSubscription));
+                PLOGI << "SunSpec discovery starting in " << *cidr;
+            } else {
+                PLOGI << "SunSpec discovery skipped: no primary IPv4 CIDR";
+            }
+
             loggingDiscovery->discover("_shelly._tcp");
             loggingDiscovery->discover("_http._tcp");
             shellyDiscovery->start();
+            if (sunspecDiscovery) {
+                sunspecDiscovery->start();
+            }
             shutdown = [
                            loggingDiscovery = std::move(loggingDiscovery),
                            loggingSubscription = std::move(loggingSubscription),
                            shellyDiscovery = std::move(shellyDiscovery),
-                           shellySubscription = std::move(shellySubscription)] {
+                           shellySubscription = std::move(shellySubscription),
+                           sunspecDiscovery = std::move(sunspecDiscovery),
+                           sunspecSubscription =
+                               std::move(sunspecSubscription)] {
+                if (sunspecSubscription) {
+                    sunspecSubscription->dispose();
+                }
+                if (sunspecDiscovery) {
+                    sunspecDiscovery->stop();
+                }
                 shellySubscription->dispose();
                 shellyDiscovery->stop();
                 loggingSubscription->dispose();

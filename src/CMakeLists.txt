@@ -12,6 +12,7 @@ target_link_libraries(
     PRIVATE
         neubau::mdns
         neubau::shelly
+        neubau::sunspec
         neubau::webapp
         plog::plog
 )

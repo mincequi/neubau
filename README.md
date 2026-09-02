@@ -193,10 +193,36 @@ timeouts, concurrency, port, unit IDs, and the host cap are configurable.
 
 ## SunSpec discovery
 
-`src/sunspec/SunspecDiscovery.hpp` builds on Modbus discovery. It probes Modbus
-unit IDs `1`, `126`, and `128` by default, checks the standard SunSpec bases
-`40000`, `50000`, and `0` for the `SunS` marker, walks the model chain, and
-decodes identity fields from Common Model 1:
+`src/sunspec/SunspecDiscovery.hpp` discovers devices from explicitly configured
+IPv4 CIDRs. For every reachable Modbus TCP endpoint, it uses one persistent
+connection and probes every unit ID from `1` through `247` exactly once in
+vendor-prioritized order. The prefix is
+`1, 240, 126-127, 100, 2, 247, 241, 128-129, 3-4, 5, 242-244, 130-135, 6-10`;
+it then probes the ranges `11-99`, `101-125`, `136-239`, and finally
+`245-246`.
+
+Each probe reads the four-register common header at address `40000` and accepts
+only `{0x5375, 0x6e53, 1, 65-or-66}`. A valid header leads to Common Model 1
+metadata and traversal of the complete model chain, which must end with the
+`0xffff` terminator. Repeated model IDs are retained as separate ordered
+locations, and unknown model IDs remain visible as locations even without a
+parser. A completed candidate has a stable ID:
+
+```text
+normalize(manufacturer) + "_" + normalize(product) + "_" + normalize(serial)
+```
+
+Normalization lowercases ASCII letters and replaces each non-`[a-z0-9]`
+character with `_`; it neither trims nor collapses underscores.
+
+At application startup, Neubau obtains the host's primary IPv4 `/24` with
+`ModbusDiscovery::primaryIpv4Cidr(24)`. When available, it starts SunSpec
+discovery on that CIDR and publishes completed things through the runtime Thing
+API. If no primary IPv4 CIDR is available, it logs that SunSpec startup was
+skipped. SunSpec discovery only identifies devices and model locations; it does
+not poll or expose SunSpec telemetry properties.
+
+For an explicitly configured integration:
 
 ```cpp
 neubau::sunspec::SunspecDiscoveryOptions options;
@@ -204,7 +230,7 @@ options.modbus.cidrs = {"192.168.1.0/24"};
 neubau::sunspec::SunspecDiscovery discovery{std::move(options)};
 discovery.candidates().collect(
     [](const neubau::sunspec::SunspecThing& thing) {
-        use(thing.manufacturer, thing.model, thing.modelIds);
+        use(thing.manufacturer, thing.model, thing.modelLocations);
     });
 discovery.start();
 ```
@@ -214,5 +240,5 @@ discovery.start();
 ```bash
 cmake -S . -B build
 cmake --build build
-./build/neubau
+./build/src/neubau
 ```

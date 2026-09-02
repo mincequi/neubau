@@ -23,6 +23,21 @@ target_link_libraries(thing_repository_test PRIVATE neubau::common)
 
 add_test(NAME thing_repository_test COMMAND thing_repository_test)
 
+add_executable(
+    discovery_repository_test
+    discovery_repository_test.cpp
+)
+target_link_libraries(
+    discovery_repository_test
+    PRIVATE
+        neubau::sunspec
+)
+
+add_test(
+    NAME discovery_repository_test
+    COMMAND discovery_repository_test
+)
+
 add_executable(persistence_test persistence_test.cpp)
 target_link_libraries(persistence_test PRIVATE neubau::common)
 
