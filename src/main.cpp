@@ -4,6 +4,7 @@
 #include <plog/Log.h>
 
 #include "common/ThingRepository.hpp"
+#include "common/Persistence.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
 #include "webapp/WebAppService.hpp"
@@ -87,7 +88,8 @@ int main() {
     static plog::ColorConsoleAppender<plog::TxtFormatter> console;
     plog::init(plog::info, &console);
 
-    neubau::common::ThingRepository things;
+    neubau::common::Persistence persistence;
+    neubau::common::ThingRepository things{persistence};
     neubau::webapp::WebAppService webApp{things};
     std::function<void()> shutdown;
     const auto result = webApp.run(
