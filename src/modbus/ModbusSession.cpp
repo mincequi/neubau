@@ -443,6 +443,27 @@ common::Flow<Registers> ModbusSession::readHoldingRegisters(
     return common::Flow<Registers>{observable.as_dynamic()};
 }
 
+ModbusEndpoint ModbusSession::endpoint() const {
+    return _state->endpoint;
+}
+
+std::chrono::milliseconds ModbusSession::connectTimeout() const {
+    return _state->connectTimeout;
+}
+
+std::chrono::milliseconds ModbusSession::responseTimeout() const {
+    return _state->responseTimeout;
+}
+
+bool ModbusSession::isClosed() const {
+    const auto loop = common::Reactor::loop();
+    if (!loop->isRunning() || !loop->isInLoopThread()) {
+        throw std::logic_error(
+            "Modbus session state must be read on the Reactor loop");
+    }
+    return !_state || _state->_closed;
+}
+
 void ModbusSession::close() {
     if (_state) {
         _state->requestClose();

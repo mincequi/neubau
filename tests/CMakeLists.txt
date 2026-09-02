@@ -143,6 +143,11 @@ target_link_libraries(sunspec_model_parser_test PRIVATE neubau::sunspec)
 
 add_test(NAME sunspec_model_parser_test COMMAND sunspec_model_parser_test)
 
+add_executable(sunspec_scanner_test sunspec_scanner_test.cpp)
+target_link_libraries(sunspec_scanner_test PRIVATE neubau::sunspec)
+
+add_test(NAME sunspec_scanner_test COMMAND sunspec_scanner_test)
+
 add_executable(webapp_service_test webapp_service_test.cpp)
 target_link_libraries(webapp_service_test PRIVATE neubau::webapp)
 

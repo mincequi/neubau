@@ -3,6 +3,7 @@ add_library(
     SunspecDiscovery.cpp
     SunspecIdentity.cpp
     SunspecModelParser.cpp
+    SunspecScanner.cpp
 )
 add_library(neubau::sunspec ALIAS neubau_sunspec)
 

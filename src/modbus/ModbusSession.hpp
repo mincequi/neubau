@@ -40,6 +40,13 @@ public:
         std::uint16_t address,
         std::uint16_t count);
 
+    [[nodiscard]] ModbusEndpoint endpoint() const;
+    [[nodiscard]] std::chrono::milliseconds connectTimeout() const;
+    [[nodiscard]] std::chrono::milliseconds responseTimeout() const;
+
+    // Must be called on the Reactor loop.
+    [[nodiscard]] bool isClosed() const;
+
     // Must be called on the Reactor loop before Reactor teardown.
     void close();
 
