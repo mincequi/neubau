@@ -21,13 +21,21 @@ public:
     explicit SunspecScanner(std::shared_ptr<modbus::ModbusSession> session);
     SunspecScanner(
         std::shared_ptr<modbus::ModbusSession> session,
+        SunspecDiscoveryOptions options);
+    SunspecScanner(
+        std::shared_ptr<modbus::ModbusSession> session,
         SessionFactory replacementSessionFactory);
+    SunspecScanner(
+        std::shared_ptr<modbus::ModbusSession> session,
+        SessionFactory replacementSessionFactory,
+        SunspecDiscoveryOptions options);
 
     [[nodiscard]] common::Flow<SunspecThing> scan() const;
 
 private:
     std::shared_ptr<modbus::ModbusSession> _session;
     SessionFactory _replacementSessionFactory;
+    SunspecDiscoveryOptions _options;
 };
 
 } // namespace neubau::sunspec

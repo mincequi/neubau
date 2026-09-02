@@ -3,6 +3,8 @@
 #include "common/Discovery.hpp"
 #include "common/Thing.hpp"
 #include "modbus/ModbusDiscovery.hpp"
+#include "modbus/ModbusSession.hpp"
+#include "sunspec/SunspecTypes.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -27,27 +29,27 @@ struct SunspecDiscoveryOptions {
 
 struct SunspecThing : common::Thing {
     SunspecThing(
-        modbus::ModbusThing modbus,
+        modbus::ModbusEndpoint endpoint,
+        std::uint8_t unitId,
         std::uint16_t baseAddress,
-        std::vector<std::uint16_t> modelIds,
-        bool completeModelChain,
+        std::vector<ModelLocation> modelLocations,
         std::string manufacturer,
         std::string model,
         std::string options,
         std::string version,
         std::string serialNumber);
 
-    modbus::ModbusThing modbus;
-    std::uint16_t baseAddress{};
-    std::vector<std::uint16_t> modelIds;
-    bool completeModelChain{};
-    std::string manufacturer;
-    std::string model;
-    std::string options;
-    std::string version;
-    std::string serialNumber;
+    const modbus::ModbusEndpoint endpoint;
+    const std::uint8_t unitId;
+    const std::uint16_t baseAddress;
+    const std::vector<ModelLocation> modelLocations;
+    const std::string manufacturer;
+    const std::string model;
+    const std::string options;
+    const std::string version;
+    const std::string serialNumber;
 
-    bool operator==(const SunspecThing&) const = default;
+    [[nodiscard]] bool operator==(const SunspecThing& other) const;
 };
 
 std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing);

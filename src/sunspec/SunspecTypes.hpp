@@ -112,6 +112,7 @@ using LiveValue = std::variant<
 struct ModelLocation {
     std::uint16_t id{};
     std::uint16_t instance{};
+    // First holding-register address of the model payload, after its header.
     std::uint16_t address{};
     std::uint16_t length{};
 

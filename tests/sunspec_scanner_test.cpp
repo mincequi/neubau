@@ -2,6 +2,7 @@
 
 #include "common/Reactor.hpp"
 #include "modbus/ModbusSession.hpp"
+#include "sunspec/SunspecDiscovery.hpp"
 #include "sunspec/SunspecScanner.hpp"
 
 #include <algorithm>
@@ -13,7 +14,11 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -84,6 +89,46 @@ constexpr std::array<std::uint16_t, 4> validHeaderWithLength66{
         validHeaderWithLength66.end()}};
 }
 
+[[nodiscard]] std::vector<std::uint16_t> commonModelPayload(
+    std::size_t length = 65) {
+    std::vector<std::uint16_t> registers(length);
+    const auto encode = [&registers](
+                            std::size_t offset,
+                            std::string_view value) {
+        assert(offset * 2 + value.size() <= registers.size() * 2);
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            auto& registerValue = registers[offset + index / 2];
+            const auto character =
+                static_cast<std::uint16_t>(
+                    static_cast<unsigned char>(value[index]));
+            if (index % 2 == 0) {
+                registerValue = static_cast<std::uint16_t>(
+                    registerValue | (character << 8U));
+            } else {
+                registerValue = static_cast<std::uint16_t>(
+                    registerValue | character);
+            }
+        }
+    };
+    encode(0, "Acme Co.");
+    encode(16, "Solar Inverter");
+    encode(32, "Option-X");
+    encode(40, "v1.2");
+    encode(48, "SN 42");
+    return registers;
+}
+
+[[nodiscard]] std::vector<ModbusScriptStep> simpleCompleteChain(
+    std::size_t commonLength = 65) {
+    return {
+        commonLength == 65
+            ? ModbusScriptStep{validHeaderReply()}
+            : ModbusScriptStep{validHeaderWithLength66Reply()},
+        ReplyHoldingRegisters{commonModelPayload(commonLength)},
+        ReplyHoldingRegisters{{0xffff, 0}},
+    };
+}
+
 class SunspecScannerSuite
     : public std::enable_shared_from_this<SunspecScannerSuite> {
 public:
@@ -115,11 +160,13 @@ private:
 
     static void assertRequest(
         const neubau::test::ModbusRequest& request,
-        std::uint8_t unitId) {
+        std::uint8_t unitId,
+        std::uint16_t address = 40000,
+        std::uint16_t count = 4) {
         assert(request.unitId == unitId);
         assert(request.function == 0x03);
-        assert(request.address == 40000);
-        assert(request.count == 4);
+        assert(request.address == address);
+        assert(request.count == count);
     }
 
     void assertReactorThread() const {
@@ -172,7 +219,13 @@ private:
         Failure failure,
         std::size_t expectedReplacementCount,
         void (SunspecScannerSuite::*next)()) {
-        auto fake = std::make_shared<ModbusFakeServer>(scriptFor(failure));
+        auto script = scriptFor(failure);
+        const auto chain = simpleCompleteChain();
+        script.insert(
+            script.end(),
+            std::next(chain.begin()),
+            chain.end());
+        auto fake = std::make_shared<ModbusFakeServer>(std::move(script));
         fake->start();
         auto initial = std::make_shared<ModbusSession>(
             ModbusEndpoint{"127.0.0.1", fake->port()},
@@ -191,9 +244,17 @@ private:
                     10ms);
             });
         auto completionCount = std::make_shared<std::size_t>();
+        auto emitted = std::make_shared<std::optional<
+            neubau::sunspec::SunspecThing>>();
 
         scanner->scan().collect(
-            [](const auto&) { assert(false); },
+            [self = shared_from_this(), emitted, fake](
+                neubau::sunspec::SunspecThing thing) {
+                self->assertReactorThread();
+                assert(!emitted->has_value());
+                assert(fake->requests().size() == 4);
+                emitted->emplace(std::move(thing));
+            },
             [](std::exception_ptr) { assert(false); },
             [self = shared_from_this(),
              fake,
@@ -201,14 +262,18 @@ private:
              scanner,
              replacementCount,
              completionCount,
+             emitted,
              expectedReplacementCount,
              next] {
                 self->assertReactorThread();
                 ++*completionCount;
                 assert(*completionCount == 1);
-                assert(fake->requests().size() == 2);
+                assert(emitted->has_value());
+                assert(fake->requests().size() == 4);
                 assertRequest(fake->requests()[0], 1);
                 assertRequest(fake->requests()[1], 240);
+                assertRequest(fake->requests()[2], 240, 40004, 65);
+                assertRequest(fake->requests()[3], 240, 40069, 2);
                 assert(*replacementCount == expectedReplacementCount);
                 (self.get()->*next)();
             });
@@ -256,8 +321,273 @@ private:
 
     void validHeaderStopsUnitProbing() {
         auto fake = std::make_shared<ModbusFakeServer>(
+            simpleCompleteChain());
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(session);
+
+        auto emitted = std::make_shared<std::optional<
+            neubau::sunspec::SunspecThing>>();
+        scanner->scan().collect(
+            [self = shared_from_this(), fake, emitted](
+                neubau::sunspec::SunspecThing thing) {
+                self->assertReactorThread();
+                assert(!emitted->has_value());
+                assert(fake->requests().size() == 3);
+                emitted->emplace(std::move(thing));
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner, emitted] {
+                neubau::common::Reactor::loop()->setTimeout(
+                    5,
+                    [self, fake, session, scanner, emitted](hv::TimerID) {
+                        self->assertReactorThread();
+                        assert(emitted->has_value());
+                        assert(fake->requests().size() == 3);
+                        assertRequest(fake->requests()[0], 1);
+                        assertRequest(fake->requests()[1], 1, 40004, 65);
+                        assertRequest(fake->requests()[2], 1, 40069, 2);
+                        self->validChainEmitsMetadataOnlyAfterTerminator();
+                    });
+            });
+    }
+
+    void validChainEmitsMetadataOnlyAfterTerminator() {
+        auto fake = std::make_shared<ModbusFakeServer>(
             std::vector<ModbusScriptStep>{
                 validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{160, 5}},
+                ReplyHoldingRegisters{{1, 2, 3, 4, 5}},
+                ReplyHoldingRegisters{{160, 3}},
+                ReplyHoldingRegisters{{6, 7, 8}},
+                ReplyHoldingRegisters{{65000, 4}},
+                ReplyHoldingRegisters{{9, 10, 11, 12}},
+                ReplyHoldingRegisters{{0xffff, 0}},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(session);
+
+        auto emitted = std::make_shared<std::optional<
+            neubau::sunspec::SunspecThing>>();
+        auto completions = std::make_shared<std::size_t>();
+        scanner->scan().collect(
+            [self = shared_from_this(), fake, emitted](
+                neubau::sunspec::SunspecThing thing) {
+                self->assertReactorThread();
+                assert(!emitted->has_value());
+                assert(fake->requests().size() == 9);
+                emitted->emplace(std::move(thing));
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner, emitted, completions] {
+                self->assertReactorThread();
+                ++*completions;
+                assert(*completions == 1);
+                assert(emitted->has_value());
+                const auto& thing = **emitted;
+                assert(thing.id() == "acme_co__solar_inverter_sn_42");
+                assert(thing.endpoint.address == "127.0.0.1");
+                assert(thing.endpoint.port == fake->port());
+                assert(thing.unitId == 1);
+                assert(thing.baseAddress == 40000);
+                assert(thing.manufacturer == "Acme Co.");
+                assert(thing.model == "Solar Inverter");
+                assert(thing.options == "Option-X");
+                assert(thing.version == "v1.2");
+                assert(thing.serialNumber == "SN 42");
+                assert((
+                    thing.modelLocations
+                    == std::vector<neubau::sunspec::ModelLocation>{
+                        {1, 0, 40004, 65},
+                        {160, 0, 40071, 5},
+                        {160, 1, 40078, 3},
+                        {65000, 0, 40083, 4},
+                    }));
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                assertRequest(fake->requests()[3], 1, 40071, 5);
+                assertRequest(fake->requests()[4], 1, 40076, 2);
+                assertRequest(fake->requests()[5], 1, 40078, 3);
+                assertRequest(fake->requests()[6], 1, 40081, 2);
+                assertRequest(fake->requests()[7], 1, 40083, 4);
+                assertRequest(fake->requests()[8], 1, 40087, 2);
+                self->commonModelLength66IsAccepted();
+            });
+    }
+
+    void commonModelLength66IsAccepted() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            simpleCompleteChain(66));
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(session);
+        auto emitted = std::make_shared<std::optional<
+            neubau::sunspec::SunspecThing>>();
+
+        scanner->scan().collect(
+            [self = shared_from_this(), fake, emitted](
+                neubau::sunspec::SunspecThing thing) {
+                self->assertReactorThread();
+                assert(!emitted->has_value());
+                assert(fake->requests().size() == 3);
+                emitted->emplace(std::move(thing));
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner, emitted] {
+                self->assertReactorThread();
+                assert(emitted->has_value());
+                assert((
+                    emitted->value().modelLocations
+                    == std::vector<neubau::sunspec::ModelLocation>{
+                        {1, 0, 40004, 66},
+                    }));
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 66);
+                assertRequest(fake->requests()[2], 1, 40070, 2);
+                self->addressOverflowCompletesWithoutEmission();
+            });
+    }
+
+    void addressOverflowCompletesWithoutEmission() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{160, 0xffff}},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(session);
+        auto completions = std::make_shared<std::size_t>();
+
+        scanner->scan().collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner, completions] {
+                self->assertReactorThread();
+                ++*completions;
+                assert(*completions == 1);
+                assert(fake->requests().size() == 3);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                self->maxModelsCompletesWithoutEmission();
+            });
+    }
+
+    void maxModelsCompletesWithoutEmission() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{160, 1}},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto options = neubau::sunspec::SunspecDiscoveryOptions{};
+        options.maxModels = 1;
+        auto scanner = std::make_shared<SunspecScanner>(session, options);
+
+        scanner->scan().collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner] {
+                self->assertReactorThread();
+                assert(fake->requests().size() == 3);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                self->maxRegisterSpanCompletesWithoutEmission();
+            });
+    }
+
+    void maxRegisterSpanCompletesWithoutEmission() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{validHeaderReply()});
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto options = neubau::sunspec::SunspecDiscoveryOptions{};
+        options.maxRegisterSpan = 68;
+        auto scanner = std::make_shared<SunspecScanner>(session, options);
+
+        scanner->scan().collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner] {
+                self->assertReactorThread();
+                assert(fake->requests().size() == 1);
+                assertRequest(fake->requests()[0], 1);
+                self->shortModelHeaderCompletesWithoutEmission();
+            });
+    }
+
+    void shortModelHeaderCompletesWithoutEmission() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{160}},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(session);
+
+        scanner->scan().collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner] {
+                self->assertReactorThread();
+                assert(fake->requests().size() == 3);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                self->missingTerminatorCompletesWithoutEmission();
+            });
+    }
+
+    void missingTerminatorCompletesWithoutEmission() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
                 NoReply{},
             });
         fake->start();
@@ -273,22 +603,21 @@ private:
             [](const auto&) { assert(false); },
             [](std::exception_ptr) { assert(false); },
             [self = shared_from_this(), fake, session, scanner] {
-                neubau::common::Reactor::loop()->setTimeout(
-                    5,
-                    [self, fake, session, scanner](hv::TimerID) {
-                        self->assertReactorThread();
-                        assert(fake->requests().size() == 1);
-                        assertRequest(fake->requests()[0], 1);
-                        self->commonModelLength66IsAccepted();
-                    });
+                self->assertReactorThread();
+                assert(fake->requests().size() == 3);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                self->invalidTerminatorLengthCompletesWithoutEmission();
             });
     }
 
-    void commonModelLength66IsAccepted() {
+    void invalidTerminatorLengthCompletesWithoutEmission() {
         auto fake = std::make_shared<ModbusFakeServer>(
             std::vector<ModbusScriptStep>{
-                validHeaderWithLength66Reply(),
                 validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{0xffff, 1}},
             });
         fake->start();
         auto session = std::make_shared<ModbusSession>(
@@ -303,23 +632,122 @@ private:
             [](const auto&) { assert(false); },
             [](std::exception_ptr) { assert(false); },
             [self = shared_from_this(), fake, session, scanner] {
-                neubau::common::Reactor::loop()->setTimeout(
-                    5,
-                    [self, fake, session, scanner](hv::TimerID) {
-                        self->assertReactorThread();
-                        assert(fake->requests().size() == 1);
-                        assertRequest(fake->requests()[0], 1);
-                        self->separateSubscriptionsStartAtUnitOne();
-                    });
+                self->assertReactorThread();
+                assert(fake->requests().size() == 3);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                self->largePayloadSplitsAndContinuesInOrder();
+            });
+    }
+
+    void largePayloadSplitsAndContinuesInOrder() {
+        std::vector<std::uint16_t> firstChunk;
+        firstChunk.reserve(125);
+        for (std::uint16_t value = 0; value < 125; ++value) {
+            firstChunk.push_back(static_cast<std::uint16_t>(0x1000 + value));
+        }
+
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{60000, 126}},
+                ReplyHoldingRegisters{std::move(firstChunk)},
+                ReplyHoldingRegisters{{0xbeef}},
+                ReplyHoldingRegisters{{160, 1}},
+                ReplyHoldingRegisters{{0xface}},
+                ReplyHoldingRegisters{{0xffff, 0}},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(session);
+        auto emitted = std::make_shared<std::optional<
+            neubau::sunspec::SunspecThing>>();
+
+        scanner->scan().collect(
+            [self = shared_from_this(), fake, emitted](
+                neubau::sunspec::SunspecThing thing) {
+                self->assertReactorThread();
+                assert(!emitted->has_value());
+                assert(fake->requests().size() == 8);
+                emitted->emplace(std::move(thing));
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, session, scanner, emitted] {
+                self->assertReactorThread();
+                assert(emitted->has_value());
+                assert(emitted->value().manufacturer == "Acme Co.");
+                assert((
+                    emitted->value().modelLocations
+                    == std::vector<neubau::sunspec::ModelLocation>{
+                        {1, 0, 40004, 65},
+                        {60000, 0, 40071, 126},
+                        {160, 0, 40199, 1},
+                    }));
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                assertRequest(fake->requests()[3], 1, 40071, 125);
+                assertRequest(fake->requests()[4], 1, 40196, 1);
+                assertRequest(fake->requests()[5], 1, 40197, 2);
+                assertRequest(fake->requests()[6], 1, 40199, 1);
+                assertRequest(fake->requests()[7], 1, 40200, 2);
+                self->closureDuringChainDoesNotReplaceTheSession();
+            });
+    }
+
+    void closureDuringChainDoesNotReplaceTheSession() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                CloseConnection{},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto replacementCount = std::make_shared<std::size_t>();
+        auto scanner = std::make_shared<SunspecScanner>(
+            session,
+            [port = fake->port(), replacementCount] {
+                ++*replacementCount;
+                return std::make_shared<ModbusSession>(
+                    ModbusEndpoint{"127.0.0.1", port},
+                    100ms,
+                    10ms);
+            });
+
+        scanner->scan().collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(),
+             fake,
+             session,
+             scanner,
+             replacementCount] {
+                self->assertReactorThread();
+                assert(fake->requests().size() == 2);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assert(*replacementCount == 0);
+                self->separateSubscriptionsStartAtUnitOne();
             });
     }
 
     void separateSubscriptionsStartAtUnitOne() {
-        auto fake = std::make_shared<ModbusFakeServer>(
-            std::vector<ModbusScriptStep>{
-                validHeaderReply(),
-                validHeaderReply(),
-            });
+        auto script = simpleCompleteChain();
+        const auto secondChain = simpleCompleteChain();
+        script.insert(script.end(), secondChain.begin(), secondChain.end());
+        auto fake = std::make_shared<ModbusFakeServer>(std::move(script));
         fake->start();
         auto session = std::make_shared<ModbusSession>(
             ModbusEndpoint{"127.0.0.1", fake->port()},
@@ -337,7 +765,7 @@ private:
                       completions,
                       subscribe] {
             scanner->scan().collect(
-                [](const auto&) { assert(false); },
+                [](const auto&) {},
                 [](std::exception_ptr) { assert(false); },
                 [self, fake, session, scanner, completions, subscribe] {
                     ++*completions;
@@ -347,9 +775,9 @@ private:
                     }
                     self->assertReactorThread();
                     assert(*completions == 2);
-                    assert(fake->requests().size() == 2);
+                    assert(fake->requests().size() == 6);
                     assertRequest(fake->requests()[0], 1);
-                    assertRequest(fake->requests()[1], 1);
+                    assertRequest(fake->requests()[3], 1);
                     self->exhaustionCompletesWithoutEmission();
                 });
         };

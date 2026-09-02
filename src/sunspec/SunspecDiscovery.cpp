@@ -1,4 +1,5 @@
 #include "sunspec/SunspecDiscovery.hpp"
+#include "sunspec/SunspecIdentity.hpp"
 
 #include <rpp/subjects/publish_subject.hpp>
 
@@ -9,9 +10,11 @@
 #include <exception>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <ostream>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -36,56 +39,6 @@ namespace {
 
 constexpr std::uint16_t commonModelId{1};
 constexpr std::uint16_t endModelId{0xffff};
-
-std::string decodeString(
-    const std::vector<std::uint16_t>& registers,
-    std::size_t offset,
-    std::size_t count) {
-    if (offset >= registers.size()) {
-        return {};
-    }
-    count = std::min(count, registers.size() - offset);
-
-    std::string result;
-    result.reserve(count * 2);
-    for (std::size_t index = 0; index < count; ++index) {
-        const auto value = registers[offset + index];
-        result.push_back(static_cast<char>(value >> 8U));
-        result.push_back(static_cast<char>(value & 0xffU));
-    }
-    while (!result.empty()
-           && (result.back() == '\0' || result.back() == ' ')) {
-        result.pop_back();
-    }
-    return result;
-}
-
-std::string normalizeIdentityPart(std::string_view value) {
-    std::string normalized;
-    normalized.reserve(value.size());
-    for (const auto character : value) {
-        const auto value = static_cast<unsigned char>(character);
-        if (value >= 'A' && value <= 'Z') {
-            normalized.push_back(
-                static_cast<char>(value - 'A' + 'a'));
-        } else if ((value >= 'a' && value <= 'z')
-                   || (value >= '0' && value <= '9')) {
-            normalized.push_back(static_cast<char>(value));
-        } else {
-            normalized.push_back('_');
-        }
-    }
-    return normalized;
-}
-
-std::string sunspecThingId(
-    std::string_view manufacturer,
-    std::string_view product,
-    std::string_view serialNumber) {
-    return normalizeIdentityPart(manufacturer) + "_"
-        + normalizeIdentityPart(product) + "_"
-        + normalizeIdentityPart(serialNumber);
-}
 
 using Registers = std::vector<std::uint16_t>;
 using ReadSuccess = std::function<void(Registers)>;
@@ -241,7 +194,7 @@ private:
                 > std::numeric_limits<std::uint16_t>::max()
             || _cursor - _state.baseAddress
                 > _options.maxRegisterSpan) {
-            complete();
+            complete(std::nullopt);
             return;
         }
 
@@ -250,14 +203,21 @@ private:
             static_cast<std::uint16_t>(_cursor),
             2,
             [self](Registers header) { self->onModelHeader(header); },
-            [self] { self->complete(); });
+            [self] { self->complete(std::nullopt); });
     }
 
     void onModelHeader(const Registers& header) {
+        if (header.size() != 2) {
+            complete(std::nullopt);
+            return;
+        }
         const auto modelId = header[0];
         const auto modelLength = header[1];
         if (modelId == endModelId) {
-            _state.completeModelChain = true;
+            if (modelLength != 0) {
+                complete(std::nullopt);
+                return;
+            }
             complete();
             return;
         }
@@ -265,28 +225,47 @@ private:
                 > std::numeric_limits<std::uint16_t>::max() + 1ULL
             || _cursor + 2 + modelLength - _state.baseAddress
                 > _options.maxRegisterSpan) {
-            complete();
+            complete(std::nullopt);
             return;
         }
 
-        _state.modelIds.push_back(modelId);
+        const auto instance = _state.instances[modelId]++;
+        if (instance > std::numeric_limits<std::uint16_t>::max()) {
+            complete(std::nullopt);
+            return;
+        }
+        _state.modelLocations.push_back({
+            modelId,
+            static_cast<std::uint16_t>(instance),
+            static_cast<std::uint16_t>(_cursor + 2),
+            modelLength,
+        });
         if (modelId == commonModelId && modelLength >= 65) {
             auto self = shared_from_this();
             read(
                 static_cast<std::uint16_t>(_cursor + 2),
                 modelLength,
                 [self, modelLength](Registers common) {
+                    if (common.size() != modelLength) {
+                        self->complete(std::nullopt);
+                        return;
+                    }
+                    const auto values =
+                        std::span<const std::uint16_t>{common};
                     self->_state.manufacturer =
-                        decodeString(common, 0, 16);
-                    self->_state.model = decodeString(common, 16, 16);
-                    self->_state.options = decodeString(common, 32, 8);
-                    self->_state.version = decodeString(common, 40, 8);
+                        decodeSunSpecString(values.subspan(0, 16));
+                    self->_state.model =
+                        decodeSunSpecString(values.subspan(16, 16));
+                    self->_state.options =
+                        decodeSunSpecString(values.subspan(32, 8));
+                    self->_state.version =
+                        decodeSunSpecString(values.subspan(40, 8));
                     self->_state.serialNumber =
-                        decodeString(common, 48, 16);
+                        decodeSunSpecString(values.subspan(48, 16));
                     self->_state.commonModelDecoded = true;
                     self->advance(modelLength);
                 },
-                [self, modelLength] { self->advance(modelLength); });
+                [self] { self->complete(std::nullopt); });
             return;
         }
         advance(modelLength);
@@ -311,10 +290,10 @@ private:
             return;
         }
         complete(SunspecThing{
-            _modbusThing,
+            {_modbusThing.address, _modbusThing.port},
+            _modbusThing.unitId,
             _state.baseAddress,
-            std::move(_state.modelIds),
-            _state.completeModelChain,
+            std::move(_state.modelLocations),
             std::move(_state.manufacturer),
             std::move(_state.model),
             std::move(_state.options),
@@ -325,8 +304,8 @@ private:
 
     struct ProbeState {
         std::uint16_t baseAddress{};
-        std::vector<std::uint16_t> modelIds;
-        bool completeModelChain{};
+        std::vector<ModelLocation> modelLocations;
+        std::map<std::uint16_t, std::uint32_t> instances;
         bool commonModelDecoded{};
         std::string manufacturer;
         std::string model;
@@ -356,30 +335,42 @@ void validateOptions(const SunspecDiscoveryOptions& options) {
 } // namespace
 
 SunspecThing::SunspecThing(
-    modbus::ModbusThing modbus,
+    modbus::ModbusEndpoint endpoint,
+    std::uint8_t unitId,
     std::uint16_t baseAddress,
-    std::vector<std::uint16_t> modelIds,
-    bool completeModelChain,
+    std::vector<ModelLocation> modelLocations,
     std::string manufacturer,
     std::string model,
     std::string options,
     std::string version,
     std::string serialNumber)
-    : Thing{sunspecThingId(manufacturer, model, serialNumber)}
-    , modbus{std::move(modbus)}
+    : Thing{sunSpecId(manufacturer, model, serialNumber)}
+    , endpoint{std::move(endpoint)}
+    , unitId{unitId}
     , baseAddress{baseAddress}
-    , modelIds{std::move(modelIds)}
-    , completeModelChain{completeModelChain}
+    , modelLocations{std::move(modelLocations)}
     , manufacturer{std::move(manufacturer)}
     , model{std::move(model)}
     , options{std::move(options)}
     , version{std::move(version)}
     , serialNumber{std::move(serialNumber)} {}
 
+bool SunspecThing::operator==(const SunspecThing& other) const {
+    return static_cast<const Thing&>(*this)
+            == static_cast<const Thing&>(other)
+        && endpoint.address == other.endpoint.address
+        && endpoint.port == other.endpoint.port
+        && unitId == other.unitId && baseAddress == other.baseAddress
+        && modelLocations == other.modelLocations
+        && manufacturer == other.manufacturer && model == other.model
+        && options == other.options && version == other.version
+        && serialNumber == other.serialNumber;
+}
+
 std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing) {
-    stream << "SunSpec " << thing.modbus.address << ':'
-           << thing.modbus.port << " unit "
-           << static_cast<unsigned int>(thing.modbus.unitId)
+    stream << "SunSpec " << thing.endpoint.address << ':'
+           << thing.endpoint.port << " unit "
+           << static_cast<unsigned int>(thing.unitId)
            << " base " << thing.baseAddress << '\n';
     if (!thing.manufacturer.empty()) {
         stream << "  manufacturer: " << thing.manufacturer << '\n';
@@ -394,8 +385,8 @@ std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing) {
         stream << "  serial: " << thing.serialNumber << '\n';
     }
     stream << "  models:";
-    for (const auto modelId : thing.modelIds) {
-        stream << ' ' << modelId;
+    for (const auto& location : thing.modelLocations) {
+        stream << ' ' << location.id;
     }
     stream << '\n';
     return stream;
@@ -479,12 +470,12 @@ common::Flow<SunspecThing> SunspecDiscovery::scan() const {
                     }
                     if (!finished && !state->stopRequested.load() && thing) {
                         auto identity = std::make_tuple(
-                            thing->modbus.address,
-                            thing->modbus.port,
+                            thing->endpoint.address,
+                            thing->endpoint.port,
                             thing->manufacturer,
                             thing->model,
                             thing->serialNumber.empty()
-                                ? std::to_string(thing->modbus.unitId)
+                                ? std::to_string(thing->unitId)
                                 : thing->serialNumber);
                         if (emitted.insert(std::move(identity)).second) {
                             observer->on_next(std::move(*thing));

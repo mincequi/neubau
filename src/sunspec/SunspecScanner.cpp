@@ -1,15 +1,21 @@
 #include "sunspec/SunspecScanner.hpp"
 
 #include "common/Reactor.hpp"
+#include "sunspec/SunspecIdentity.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -45,17 +51,120 @@ constexpr std::array<std::uint8_t, 247> unitIds{
         && (registers[3] == 65 || registers[3] == 66);
 }
 
+using Registers = std::vector<std::uint16_t>;
+using ReadSuccess = std::function<void(Registers)>;
+using ReadFailure = std::function<void()>;
+
+class LogicalRegisterReader
+    : public std::enable_shared_from_this<LogicalRegisterReader> {
+public:
+    LogicalRegisterReader(
+        std::shared_ptr<modbus::ModbusSession> session,
+        std::uint8_t unitId,
+        std::uint32_t startAddress,
+        std::uint32_t registerCount,
+        ReadSuccess success,
+        ReadFailure failure)
+        : _session{std::move(session)}
+        , _unitId{unitId}
+        , _nextAddress{startAddress}
+        , _remaining{registerCount}
+        , _success{std::move(success)}
+        , _failure{std::move(failure)} {
+        _registers.reserve(registerCount);
+    }
+
+    void start() { next(); }
+
+private:
+    void next() {
+        if (_finished) {
+            return;
+        }
+        if (_remaining == 0) {
+            _finished = true;
+            auto success = std::move(_success);
+            _failure = nullptr;
+            if (success) {
+                success(std::move(_registers));
+            }
+            return;
+        }
+
+        constexpr auto maxAddressExclusive =
+            static_cast<std::uint32_t>(
+                std::numeric_limits<std::uint16_t>::max())
+            + 1U;
+        const auto count = std::min<std::uint32_t>(125, _remaining);
+        const auto endAddress =
+            static_cast<std::uint64_t>(_nextAddress) + count;
+        if (_nextAddress >= maxAddressExclusive
+            || endAddress > maxAddressExclusive) {
+            fail();
+            return;
+        }
+
+        const auto self = shared_from_this();
+        static_cast<void>(
+            _session->readHoldingRegisters(
+                _unitId,
+                static_cast<std::uint16_t>(_nextAddress),
+                static_cast<std::uint16_t>(count))
+                .collect(
+                    [self, count](Registers registers) {
+                        if (registers.size() != count) {
+                            self->fail();
+                            return;
+                        }
+                        self->_registers.insert(
+                            self->_registers.end(),
+                            registers.begin(),
+                            registers.end());
+                        self->_nextAddress += count;
+                        self->_remaining -= count;
+                    },
+                    [self](std::exception_ptr) { self->fail(); },
+                    [self] { self->next(); }));
+    }
+
+    void fail() {
+        if (_finished) {
+            return;
+        }
+        _finished = true;
+        auto failure = std::move(_failure);
+        _success = nullptr;
+        if (failure) {
+            failure();
+        }
+    }
+
+    std::shared_ptr<modbus::ModbusSession> _session;
+    std::uint8_t _unitId;
+    std::uint32_t _nextAddress;
+    std::uint32_t _remaining;
+    Registers _registers;
+    ReadSuccess _success;
+    ReadFailure _failure;
+    bool _finished{};
+};
+
 class ScanState : public std::enable_shared_from_this<ScanState> {
 public:
     template<typename Observer>
     ScanState(
         std::shared_ptr<modbus::ModbusSession> initialSession,
         SunspecScanner::SessionFactory replacementSessionFactory,
+        SunspecDiscoveryOptions options,
         Observer observer)
         : _session{std::move(initialSession)}
-        , _replacementSessionFactory{std::move(replacementSessionFactory)} {
+        , _replacementSessionFactory{std::move(replacementSessionFactory)}
+        , _options{std::move(options)} {
         auto sharedObserver =
             std::make_shared<std::decay_t<Observer>>(std::move(observer));
+        _nextObserver = [sharedObserver](SunspecThing thing) {
+            sharedObserver->on_next(std::move(thing));
+        };
         _completeObserver = [sharedObserver] {
             sharedObserver->on_completed();
         };
@@ -123,8 +232,7 @@ private:
                 registers[3],
             },
         };
-        // Task 6 continues model-chain discovery from this accepted header.
-        complete();
+        readCommonModel();
     }
 
     void onProbeFailure() {
@@ -135,6 +243,178 @@ private:
             return;
         }
         advanceUnit();
+    }
+
+    [[nodiscard]] bool isInRegisterSpan(
+        std::uint32_t address,
+        std::uint32_t count) const {
+        constexpr auto maxAddressExclusive =
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::uint16_t>::max())
+            + 1U;
+        const auto endAddress = static_cast<std::uint64_t>(address) + count;
+        return address >= 40000 && address < maxAddressExclusive
+            && endAddress <= maxAddressExclusive
+            && endAddress - 40000 <= _options.maxRegisterSpan;
+    }
+
+    [[nodiscard]] bool modelAddresses(
+        std::uint16_t modelLength,
+        std::uint32_t& payloadAddress,
+        std::uint32_t& nextHeaderAddress) const {
+        const auto payload = static_cast<std::uint64_t>(_currentAddress) + 2U;
+        const auto next = payload + modelLength;
+        if (payload > std::numeric_limits<std::uint32_t>::max()
+            || next > std::numeric_limits<std::uint32_t>::max()) {
+            return false;
+        }
+        payloadAddress = static_cast<std::uint32_t>(payload);
+        nextHeaderAddress = static_cast<std::uint32_t>(next);
+        return isInRegisterSpan(_currentAddress, 2)
+            && isInRegisterSpan(payloadAddress, modelLength);
+    }
+
+    void read(
+        std::uint32_t address,
+        std::uint32_t count,
+        ReadSuccess success,
+        ReadFailure failure) {
+        auto reader = std::make_shared<LogicalRegisterReader>(
+            _session,
+            _selectedHeader->unitId,
+            address,
+            count,
+            std::move(success),
+            std::move(failure));
+        reader->start();
+    }
+
+    void readCommonModel() {
+        const auto commonLength =
+            static_cast<std::uint32_t>(_selectedHeader->registers[3]);
+        constexpr auto commonPayloadAddress = std::uint32_t{40004};
+        if (!isInRegisterSpan(commonPayloadAddress, commonLength)) {
+            complete();
+            return;
+        }
+
+        const auto self = shared_from_this();
+        read(
+            commonPayloadAddress,
+            commonLength,
+            [self, commonLength](Registers registers) {
+                self->onCommonModel(std::move(registers), commonLength);
+            },
+            [self] { self->complete(); });
+    }
+
+    void onCommonModel(Registers registers, std::uint32_t commonLength) {
+        if (_finished || registers.size() != commonLength
+            || _locations.size() >= _options.maxModels) {
+            complete();
+            return;
+        }
+
+        const auto values = std::span<const std::uint16_t>{registers};
+        _manufacturer = decodeSunSpecString(values.subspan(0, 16));
+        _model = decodeSunSpecString(values.subspan(16, 16));
+        _optionsValue = decodeSunSpecString(values.subspan(32, 8));
+        _version = decodeSunSpecString(values.subspan(40, 8));
+        _serialNumber = decodeSunSpecString(values.subspan(48, 16));
+        _locations.push_back({
+            1,
+            0,
+            40004,
+            static_cast<std::uint16_t>(commonLength),
+        });
+        _instances.emplace(1, 1);
+        _currentAddress = 40004U + commonLength;
+        readModelHeader();
+    }
+
+    void readModelHeader() {
+        if (_finished || !isInRegisterSpan(_currentAddress, 2)) {
+            complete();
+            return;
+        }
+
+        const auto self = shared_from_this();
+        read(
+            _currentAddress,
+            2,
+            [self](Registers header) {
+                self->onModelHeader(std::move(header));
+            },
+            [self] { self->complete(); });
+    }
+
+    void onModelHeader(Registers header) {
+        if (_finished || header.size() != 2) {
+            complete();
+            return;
+        }
+
+        const auto modelId = header[0];
+        const auto modelLength = header[1];
+        if (modelId == 0xffff) {
+            // The SunSpec end marker is the two-register {0xffff, 0} header.
+            if (modelLength == 0) {
+                emit();
+            } else {
+                complete();
+            }
+            return;
+        }
+        if (_locations.size() >= _options.maxModels) {
+            complete();
+            return;
+        }
+
+        std::uint32_t payloadAddress{};
+        std::uint32_t nextHeaderAddress{};
+        if (!modelAddresses(
+                modelLength,
+                payloadAddress,
+                nextHeaderAddress)) {
+            complete();
+            return;
+        }
+
+        const auto instanceIt = _instances.find(modelId);
+        const auto instance = instanceIt == _instances.end()
+            ? std::uint32_t{0}
+            : instanceIt->second;
+        if (instance > std::numeric_limits<std::uint16_t>::max()) {
+            complete();
+            return;
+        }
+        _instances[modelId] = instance + 1;
+        _locations.push_back({
+            modelId,
+            static_cast<std::uint16_t>(instance),
+            static_cast<std::uint16_t>(payloadAddress),
+            modelLength,
+        });
+
+        if (modelLength == 0) {
+            _currentAddress = nextHeaderAddress;
+            readModelHeader();
+            return;
+        }
+
+        const auto self = shared_from_this();
+        read(
+            payloadAddress,
+            modelLength,
+            [self, nextHeaderAddress, modelLength](Registers registers) {
+                if (registers.size() != modelLength) {
+                    self->complete();
+                    return;
+                }
+                self->_currentAddress = nextHeaderAddress;
+                self->readModelHeader();
+            },
+            [self] { self->complete(); });
     }
 
     [[nodiscard]] bool replaceClosedSession() {
@@ -151,6 +431,26 @@ private:
     void advanceUnit() {
         ++_unitIndex;
         probeNextUnit();
+    }
+
+    void emit() {
+        if (_finished) {
+            return;
+        }
+        _finished = true;
+        SunspecThing thing{
+            _session->endpoint(),
+            _selectedHeader->unitId,
+            40000,
+            std::move(_locations),
+            std::move(_manufacturer),
+            std::move(_model),
+            std::move(_optionsValue),
+            std::move(_version),
+            std::move(_serialNumber),
+        };
+        _nextObserver(std::move(thing));
+        _completeObserver();
     }
 
     void complete() {
@@ -171,9 +471,19 @@ private:
 
     std::shared_ptr<modbus::ModbusSession> _session;
     SunspecScanner::SessionFactory _replacementSessionFactory;
+    SunspecDiscoveryOptions _options;
+    std::function<void(SunspecThing)> _nextObserver;
     std::function<void()> _completeObserver;
     std::function<void(std::exception_ptr)> _errorObserver;
     std::optional<SelectedHeader> _selectedHeader;
+    std::vector<ModelLocation> _locations;
+    std::map<std::uint16_t, std::uint32_t> _instances;
+    std::string _manufacturer;
+    std::string _model;
+    std::string _optionsValue;
+    std::string _version;
+    std::string _serialNumber;
+    std::uint32_t _currentAddress{};
     std::size_t _unitIndex{};
     bool _finished{};
 };
@@ -199,15 +509,39 @@ std::span<const std::uint8_t> prioritizedUnitIds() noexcept {
 
 SunspecScanner::SunspecScanner(
     std::shared_ptr<modbus::ModbusSession> session)
-    : SunspecScanner(std::move(session), {}) {}
+    : SunspecScanner(
+          std::move(session),
+          SessionFactory{},
+          SunspecDiscoveryOptions{}) {}
+
+SunspecScanner::SunspecScanner(
+    std::shared_ptr<modbus::ModbusSession> session,
+    SunspecDiscoveryOptions options)
+    : SunspecScanner(
+          std::move(session),
+          SessionFactory{},
+          std::move(options)) {}
 
 SunspecScanner::SunspecScanner(
     std::shared_ptr<modbus::ModbusSession> session,
     SessionFactory replacementSessionFactory)
+    : SunspecScanner(
+          std::move(session),
+          std::move(replacementSessionFactory),
+          SunspecDiscoveryOptions{}) {}
+
+SunspecScanner::SunspecScanner(
+    std::shared_ptr<modbus::ModbusSession> session,
+    SessionFactory replacementSessionFactory,
+    SunspecDiscoveryOptions options)
     : _session{std::move(session)}
-    , _replacementSessionFactory{std::move(replacementSessionFactory)} {
+    , _replacementSessionFactory{std::move(replacementSessionFactory)}
+    , _options{std::move(options)} {
     if (!_session) {
         throw std::invalid_argument("SunSpec scanner requires a Modbus session");
+    }
+    if (_options.maxModels == 0 || _options.maxRegisterSpan < 4) {
+        throw std::invalid_argument("SunSpec scanner limits are invalid");
     }
     if (!_replacementSessionFactory) {
         _replacementSessionFactory = defaultReplacementFactory(_session);
@@ -217,11 +551,13 @@ SunspecScanner::SunspecScanner(
 common::Flow<SunspecThing> SunspecScanner::scan() const {
     auto observable = rpp::source::create<SunspecThing>(
         [session = _session,
-         replacementSessionFactory = _replacementSessionFactory](
+         replacementSessionFactory = _replacementSessionFactory,
+         options = _options](
             auto&& observer) {
             auto state = std::make_shared<ScanState>(
                 std::move(session),
                 std::move(replacementSessionFactory),
+                std::move(options),
                 std::move(observer));
             state->start();
         });

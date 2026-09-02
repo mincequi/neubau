@@ -44,7 +44,7 @@ std::uint16_t requestAddress(const std::uint8_t* request) {
 }
 
 std::vector<std::uint16_t> commonModelRegisters() {
-    std::vector<std::uint16_t> registers(65, 0x2020);
+    std::vector<std::uint16_t> registers(65);
     const auto encode = [&registers](
                             std::size_t offset,
                             std::string_view value) {
@@ -84,10 +84,10 @@ int main() {
         == std::vector<std::uint8_t>({1, 126, 128}));
 
     const neubau::sunspec::SunspecThing sunspec{
-        neubau::modbus::ModbusThing{"192.0.2.10", 502, 7},
+        neubau::modbus::ModbusEndpoint{"192.0.2.10", 502},
+        7,
         40000,
-        {},
-        true,
+        {{1, 0, 40004, 65}},
         "Acme Co.",
         "Inverter/1",
         {},
@@ -95,6 +95,14 @@ int main() {
         "SN 42",
     };
     assert(sunspec.id() == "acme_co__inverter_1_sn_42");
+    assert(sunspec.endpoint.address == "192.0.2.10");
+    assert(sunspec.endpoint.port == 502);
+    assert(sunspec.unitId == 7);
+    assert((
+        sunspec.modelLocations
+        == std::vector<neubau::sunspec::ModelLocation>{
+            {1, 0, 40004, 65},
+        }));
 
     hv::TcpServerEventLoopTmpl<> server{neubau::common::Reactor::loop()};
     std::uint16_t port = 62000;
@@ -163,7 +171,7 @@ int main() {
         == std::future_status::ready);
     completion.get();
     assert(found.size() == 1);
-    assert(found.front().modbus.unitId == 2);
+    assert(found.front().unitId == 2);
     assert(found.front().id() == "acme__sn_42");
     discovery.stop();
     server.stop();
