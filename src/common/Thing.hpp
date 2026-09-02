@@ -18,9 +18,6 @@ class ThingRepository;
 
 class Thing {
 public:
-    Thing()
-        : Thing{"thing"} {}
-
     explicit Thing(std::string id)
         : _id{std::move(id)}
         , _name{_id}

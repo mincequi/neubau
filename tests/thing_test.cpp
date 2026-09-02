@@ -8,6 +8,7 @@
 
 static_assert(!std::is_copy_assignable_v<neubau::common::Thing>);
 static_assert(!std::is_move_assignable_v<neubau::common::Thing>);
+static_assert(!std::is_default_constructible_v<neubau::common::Thing>);
 
 int main() {
     using neubau::common::PropertyKey;
