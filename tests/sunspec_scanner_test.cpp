@@ -29,6 +29,7 @@ namespace {
 using namespace std::chrono_literals;
 using neubau::modbus::ModbusEndpoint;
 using neubau::modbus::ModbusSession;
+using neubau::sunspec::SunspecScanControl;
 using neubau::sunspec::SunspecScanner;
 using neubau::sunspec::prioritizedUnitIds;
 using neubau::test::CloseConnection;
@@ -698,7 +699,145 @@ private:
                 assertRequest(fake->requests()[5], 1, 40197, 2);
                 assertRequest(fake->requests()[6], 1, 40199, 1);
                 assertRequest(fake->requests()[7], 1, 40200, 2);
-                self->closureDuringChainDoesNotReplaceTheSession();
+                self->cancellationDuringUnitProbeStopsReplacementAndRequests();
+            });
+    }
+
+    void cancellationDuringUnitProbeStopsReplacementAndRequests() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{NoReply{}});
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            100ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto replacementCount = std::make_shared<std::size_t>();
+        auto scanner = std::make_shared<SunspecScanner>(
+            session,
+            [port = fake->port(), replacementCount] {
+                ++*replacementCount;
+                return std::make_shared<ModbusSession>(
+                    ModbusEndpoint{"127.0.0.1", port},
+                    100ms,
+                    100ms);
+            });
+        auto control = std::make_shared<SunspecScanControl>();
+        auto completions = std::make_shared<std::size_t>();
+
+        scanner->scan(control).collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(),
+             fake,
+             session,
+             scanner,
+             control,
+             replacementCount,
+             completions] {
+                self->assertReactorThread();
+                ++*completions;
+                assert(*completions == 1);
+                assert(fake->requests().size() == 1);
+                assert(*replacementCount == 0);
+                neubau::common::Reactor::loop()->setTimeout(
+                    20,
+                    [self,
+                     fake,
+                     session,
+                     scanner,
+                     control,
+                     replacementCount,
+                     completions](hv::TimerID) {
+                        self->assertReactorThread();
+                        assert(*completions == 1);
+                        assert(fake->requests().size() == 1);
+                        assert(*replacementCount == 0);
+                        self->cancellationDuringChunkTraversalStopsRequests();
+                    });
+            });
+        neubau::common::Reactor::loop()->setTimeout(
+            10,
+            [self = shared_from_this(), fake, control](hv::TimerID) {
+                self->assertReactorThread();
+                assert(fake->requests().size() == 1);
+                assertRequest(fake->requests()[0], 1);
+                control->cancel();
+                control->cancel();
+            });
+    }
+
+    void cancellationDuringChunkTraversalStopsRequests() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                validHeaderReply(),
+                ReplyHoldingRegisters{commonModelPayload()},
+                ReplyHoldingRegisters{{60000, 126}},
+                NoReply{},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            100ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto replacementCount = std::make_shared<std::size_t>();
+        auto scanner = std::make_shared<SunspecScanner>(
+            session,
+            [port = fake->port(), replacementCount] {
+                ++*replacementCount;
+                return std::make_shared<ModbusSession>(
+                    ModbusEndpoint{"127.0.0.1", port},
+                    100ms,
+                    100ms);
+            });
+        auto control = std::make_shared<SunspecScanControl>();
+        auto completions = std::make_shared<std::size_t>();
+
+        scanner->scan(control).collect(
+            [](const auto&) { assert(false); },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(),
+             fake,
+             session,
+             scanner,
+             control,
+             replacementCount,
+             completions] {
+                self->assertReactorThread();
+                ++*completions;
+                assert(*completions == 1);
+                assert(fake->requests().size() == 4);
+                assert(*replacementCount == 0);
+                neubau::common::Reactor::loop()->setTimeout(
+                    20,
+                    [self,
+                     fake,
+                     session,
+                     scanner,
+                     control,
+                     replacementCount,
+                     completions](hv::TimerID) {
+                        self->assertReactorThread();
+                        assert(*completions == 1);
+                        assert(fake->requests().size() == 4);
+                        assert(*replacementCount == 0);
+                        self->closureDuringChainDoesNotReplaceTheSession();
+                    });
+            });
+        neubau::common::Reactor::loop()->setTimeout(
+            10,
+            [self = shared_from_this(), fake, control](hv::TimerID) {
+                self->assertReactorThread();
+                assert(fake->requests().size() == 4);
+                assertRequest(fake->requests()[0], 1);
+                assertRequest(fake->requests()[1], 1, 40004, 65);
+                assertRequest(fake->requests()[2], 1, 40069, 2);
+                assertRequest(fake->requests()[3], 1, 40071, 125);
+                control->cancel();
+                control->cancel();
             });
     }
 

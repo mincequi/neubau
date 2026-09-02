@@ -13,6 +13,20 @@ namespace neubau::sunspec {
 
 [[nodiscard]] std::span<const std::uint8_t> prioritizedUnitIds() noexcept;
 
+class SunspecScanControl {
+public:
+    // Must be called on the running Reactor loop.
+    void cancel();
+
+private:
+    friend class SunspecScanner;
+
+    void bind(std::function<void()> cancellation);
+
+    std::function<void()> _cancellation;
+    bool _cancelled{};
+};
+
 class SunspecScanner {
 public:
     using SessionFactory =
@@ -31,6 +45,9 @@ public:
         SunspecDiscoveryOptions options);
 
     [[nodiscard]] common::Flow<SunspecThing> scan() const;
+    // Supply one newly-created control for each scan subscription.
+    [[nodiscard]] common::Flow<SunspecThing> scan(
+        std::shared_ptr<SunspecScanControl> control) const;
 
 private:
     std::shared_ptr<modbus::ModbusSession> _session;

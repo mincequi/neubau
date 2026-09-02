@@ -21,6 +21,34 @@
 #include <vector>
 
 namespace neubau::sunspec {
+
+void SunspecScanControl::cancel() {
+    const auto loop = common::Reactor::loop();
+    if (!loop->isRunning() || !loop->isInLoopThread()) {
+        throw std::logic_error(
+            "SunSpec scans must be cancelled on the Reactor loop");
+    }
+    if (_cancelled) {
+        return;
+    }
+    _cancelled = true;
+    if (_cancellation) {
+        _cancellation();
+    }
+}
+
+void SunspecScanControl::bind(std::function<void()> cancellation) {
+    const auto loop = common::Reactor::loop();
+    if (!loop->isRunning() || !loop->isInLoopThread()) {
+        throw std::logic_error(
+            "SunSpec scan controls must bind on the Reactor loop");
+    }
+    _cancellation = std::move(cancellation);
+    if (_cancelled && _cancellation) {
+        _cancellation();
+    }
+}
+
 namespace {
 
 constexpr std::array<std::uint8_t, 247> unitIds{
@@ -54,6 +82,7 @@ constexpr std::array<std::uint8_t, 247> unitIds{
 using Registers = std::vector<std::uint16_t>;
 using ReadSuccess = std::function<void(Registers)>;
 using ReadFailure = std::function<void()>;
+using CancelBinder = std::function<void(std::function<void()>)>;
 
 class LogicalRegisterReader
     : public std::enable_shared_from_this<LogicalRegisterReader> {
@@ -156,10 +185,12 @@ public:
         std::shared_ptr<modbus::ModbusSession> initialSession,
         SunspecScanner::SessionFactory replacementSessionFactory,
         SunspecDiscoveryOptions options,
+        CancelBinder bindCancellation,
         Observer observer)
         : _session{std::move(initialSession)}
         , _replacementSessionFactory{std::move(replacementSessionFactory)}
-        , _options{std::move(options)} {
+        , _options{std::move(options)}
+        , _bindCancellation{std::move(bindCancellation)} {
         auto sharedObserver =
             std::make_shared<std::decay_t<Observer>>(std::move(observer));
         _nextObserver = [sharedObserver](SunspecThing thing) {
@@ -186,6 +217,14 @@ private:
     };
 
     void startInLoop() {
+        _bindCancellation([weak = weak_from_this()] {
+            if (const auto self = weak.lock()) {
+                self->cancelInLoop();
+            }
+        });
+        if (_finished) {
+            return;
+        }
         if (_session->isClosed() && !replaceClosedSession()) {
             return;
         }
@@ -433,6 +472,18 @@ private:
         probeNextUnit();
     }
 
+    void cancelInLoop() {
+        if (_finished) {
+            return;
+        }
+        _finished = true;
+        const auto session = _session;
+        if (!session->isClosed()) {
+            session->close();
+        }
+        _completeObserver();
+    }
+
     void emit() {
         if (_finished) {
             return;
@@ -472,6 +523,7 @@ private:
     std::shared_ptr<modbus::ModbusSession> _session;
     SunspecScanner::SessionFactory _replacementSessionFactory;
     SunspecDiscoveryOptions _options;
+    CancelBinder _bindCancellation;
     std::function<void(SunspecThing)> _nextObserver;
     std::function<void()> _completeObserver;
     std::function<void(std::exception_ptr)> _errorObserver;
@@ -554,10 +606,44 @@ common::Flow<SunspecThing> SunspecScanner::scan() const {
          replacementSessionFactory = _replacementSessionFactory,
          options = _options](
             auto&& observer) {
+            auto control = std::make_shared<SunspecScanControl>();
+            auto bindCancellation =
+                [control](std::function<void()> cancellation) {
+                    control->bind(std::move(cancellation));
+                };
             auto state = std::make_shared<ScanState>(
                 std::move(session),
                 std::move(replacementSessionFactory),
                 std::move(options),
+                std::move(bindCancellation),
+                std::move(observer));
+            state->start();
+        });
+    return common::Flow<SunspecThing>{observable.as_dynamic()};
+}
+
+common::Flow<SunspecThing> SunspecScanner::scan(
+    std::shared_ptr<SunspecScanControl> control) const {
+    if (!control) {
+        throw std::invalid_argument(
+            "SunSpec controlled scans require a control");
+    }
+
+    auto observable = rpp::source::create<SunspecThing>(
+        [session = _session,
+         replacementSessionFactory = _replacementSessionFactory,
+         options = _options,
+         control = std::move(control)](
+            auto&& observer) {
+            auto bindCancellation =
+                [control](std::function<void()> cancellation) {
+                    control->bind(std::move(cancellation));
+                };
+            auto state = std::make_shared<ScanState>(
+                std::move(session),
+                std::move(replacementSessionFactory),
+                std::move(options),
+                std::move(bindCancellation),
                 std::move(observer));
             state->start();
         });
