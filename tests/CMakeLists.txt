@@ -75,6 +75,59 @@ add_test(
     COMMAND modbus_session_shutdown_test
 )
 
+add_executable(
+    modbus_session_reentrant_close_test
+    modbus_session_reentrant_close_test.cpp
+)
+target_link_libraries(modbus_session_reentrant_close_test PRIVATE neubau::modbus)
+
+add_test(
+    NAME modbus_session_reentrant_close_test
+    COMMAND modbus_session_reentrant_close_test
+)
+
+add_library(
+    neubau_modbus_timeout_test_support
+    STATIC
+    "${PROJECT_SOURCE_DIR}/src/modbus/ModbusSession.cpp"
+)
+target_include_directories(
+    neubau_modbus_timeout_test_support
+    PRIVATE
+        "${PROJECT_SOURCE_DIR}/src"
+)
+target_compile_definitions(
+    neubau_modbus_timeout_test_support
+    PRIVATE
+        NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING
+)
+target_link_libraries(
+    neubau_modbus_timeout_test_support
+    PUBLIC
+        neubau::common
+)
+target_compile_features(neubau_modbus_timeout_test_support PUBLIC cxx_std_20)
+
+add_executable(
+    modbus_session_timeout_test
+    modbus_session_timeout_test.cpp
+)
+target_compile_definitions(
+    modbus_session_timeout_test
+    PRIVATE
+        NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING
+)
+target_link_libraries(
+    modbus_session_timeout_test
+    PRIVATE
+        neubau_modbus_timeout_test_support
+)
+
+add_test(
+    NAME modbus_session_timeout_test
+    COMMAND modbus_session_timeout_test
+)
+
 add_executable(sunspec_discovery_test sunspec_discovery_test.cpp)
 target_link_libraries(sunspec_discovery_test PRIVATE neubau::sunspec)
 

@@ -14,17 +14,6 @@
 #include <utility>
 #include <vector>
 
-namespace neubau::modbus::testing {
-
-class ModbusSessionTestAccess {
-public:
-    static void expireConnectTimeout(ModbusSession& session) {
-        session.expireConnectTimeoutForTest();
-    }
-};
-
-} // namespace neubau::modbus::testing
-
 namespace {
 
 using namespace std::chrono_literals;
@@ -258,23 +247,9 @@ private:
             [](const auto&) { assert(false); },
             [self = shared_from_this()](std::exception_ptr error) {
                 self->assertError(error, "response timed out");
-                self->connectTimeoutIsExplicit();
-            },
-            [] { assert(false); });
-    }
-
-    void connectTimeoutIsExplicit() {
-        auto fake = server({NoReply{}});
-        auto persistent = session(fake);
-        persistent->readHoldingRegisters(11, 70, 1).collect(
-            [](const auto&) { assert(false); },
-            [self = shared_from_this()](std::exception_ptr error) {
-                self->assertError(error, "connection timed out");
                 self->transportCloseFailsActiveAndQueuedReads();
             },
             [] { assert(false); });
-        neubau::modbus::testing::ModbusSessionTestAccess::
-            expireConnectTimeout(*persistent);
     }
 
     void transportCloseFailsActiveAndQueuedReads() {

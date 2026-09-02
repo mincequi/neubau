@@ -15,13 +15,13 @@ struct ModbusEndpoint {
     std::uint16_t port{};
 };
 
-class ModbusSession;
-
+#if defined(NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING)
 namespace testing {
 
 class ModbusSessionTestAccess;
 
 } // namespace testing
+#endif
 
 class ModbusSession {
 public:
@@ -44,10 +44,14 @@ public:
     void close();
 
 private:
+#if defined(NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING)
     friend class testing::ModbusSessionTestAccess;
+#endif
 
     struct State;
+#if defined(NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING)
     void expireConnectTimeoutForTest();
+#endif
     std::shared_ptr<State> _state;
 };
 

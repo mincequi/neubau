@@ -82,6 +82,7 @@ struct ModbusSession::State
     }
 
     void requestClose() {
+        const auto self = shared_from_this();
         const auto loop = common::Reactor::loop();
         if (!loop->isRunning() || !loop->isInLoopThread()) {
             throw std::logic_error(
@@ -448,10 +449,12 @@ void ModbusSession::close() {
     }
 }
 
+#if defined(NEUBAU_MODBUS_SESSION_TIMEOUT_TESTING)
 void ModbusSession::expireConnectTimeoutForTest() {
     const auto state = _state;
     common::Reactor::loop()->queueInLoop(
         [state] { state->onConnectTimeout(); });
 }
+#endif
 
 } // namespace neubau::modbus
