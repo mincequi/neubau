@@ -68,3 +68,8 @@ add_executable(webapp_service_test webapp_service_test.cpp)
 target_link_libraries(webapp_service_test PRIVATE neubau::webapp)
 
 add_test(NAME webapp_service_test COMMAND webapp_service_test)
+
+add_executable(thing_json_test thing_json_test.cpp)
+target_link_libraries(thing_json_test PRIVATE neubau::webapp)
+
+add_test(NAME thing_json_test COMMAND thing_json_test)
