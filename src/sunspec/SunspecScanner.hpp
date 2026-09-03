@@ -32,6 +32,8 @@ public:
     using SessionFactory =
         std::function<std::shared_ptr<modbus::ModbusSession>()>;
 
+    // The supplied session is reserved for the first subscription. Later
+    // subscriptions obtain exclusive sessions through SessionFactory.
     explicit SunspecScanner(std::shared_ptr<modbus::ModbusSession> session);
     SunspecScanner(
         std::shared_ptr<modbus::ModbusSession> session,
@@ -44,13 +46,15 @@ public:
         SessionFactory replacementSessionFactory,
         SunspecDiscoveryOptions options);
 
+    // Every subscription owns an exclusive session. Supply one newly-created
+    // control for each controlled scan subscription.
     [[nodiscard]] common::Flow<SunspecThing> scan() const;
-    // Supply one newly-created control for each scan subscription.
     [[nodiscard]] common::Flow<SunspecThing> scan(
         std::shared_ptr<SunspecScanControl> control) const;
 
 private:
     std::shared_ptr<modbus::ModbusSession> _session;
+    SessionFactory _subscriptionSessionFactory;
     SessionFactory _replacementSessionFactory;
     SunspecDiscoveryOptions _options;
 };

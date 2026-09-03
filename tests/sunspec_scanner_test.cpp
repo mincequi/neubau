@@ -1024,35 +1024,43 @@ private:
     }
 
     void concurrentCancellationDoesNotAbortPeerScan() {
-        auto fake = std::make_shared<ModbusFakeServer>(
+        auto cancelled = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{NoReply{}});
+        auto peer = std::make_shared<ModbusFakeServer>(
             std::vector<ModbusScriptStep>{
-                DelayReply{20ms, {0x5375, 0x6e54, 1, 65}},
-                validHeaderReply(),
+                DelayReply{30ms, {0x5375, 0x6e53, 1, 65}},
                 ReplyHoldingRegisters{commonModelPayload()},
                 ReplyHoldingRegisters{{0xffff, 0}},
             });
-        fake->start();
+        cancelled->start();
+        peer->start();
         auto session = std::make_shared<ModbusSession>(
-            ModbusEndpoint{"127.0.0.1", fake->port()},
+            ModbusEndpoint{"127.0.0.1", cancelled->port()},
             100ms,
-            100ms);
-        _servers.push_back(fake);
+            500ms);
+        _servers.push_back(cancelled);
+        _servers.push_back(peer);
         _sessions.push_back(session);
         auto replacementCount = std::make_shared<std::size_t>();
         auto scanner = std::make_shared<SunspecScanner>(
             session,
-            [port = fake->port(), replacementCount] {
+            [self = shared_from_this(), port = peer->port(), replacementCount] {
+                self->assertReactorThread();
                 ++*replacementCount;
-                return std::make_shared<ModbusSession>(
+                auto replacement = std::make_shared<ModbusSession>(
                     ModbusEndpoint{"127.0.0.1", port},
                     100ms,
-                    100ms);
+                    500ms);
+                self->_sessions.push_back(replacement);
+                return replacement;
             });
         auto cancelledControl = std::make_shared<SunspecScanControl>();
         auto survivingControl = std::make_shared<SunspecScanControl>();
         auto cancelledCompletions = std::make_shared<std::size_t>();
         auto survivingCompletions = std::make_shared<std::size_t>();
         auto candidates = std::make_shared<std::size_t>();
+        auto cancellationTime = std::make_shared<std::optional<
+            std::chrono::steady_clock::time_point>>();
 
         scanner->scan(cancelledControl).collect(
             [](const auto&) { assert(false); },
@@ -1072,7 +1080,6 @@ private:
             },
             [](std::exception_ptr) { assert(false); },
             [self = shared_from_this(),
-             fake,
              session,
              scanner,
              cancelledControl,
@@ -1080,45 +1087,150 @@ private:
              replacementCount,
              cancelledCompletions,
              survivingCompletions,
-             candidates] {
+             candidates,
+             cancelled,
+             peer,
+             cancellationTime] {
                 self->assertReactorThread();
                 ++*survivingCompletions;
                 assert(*survivingCompletions == 1);
                 assert(*cancelledCompletions == 1);
                 assert(*candidates == 1);
-                neubau::common::Reactor::loop()->setTimeout(
-                    20,
+                assert(cancellationTime->has_value());
+                assert(
+                    std::chrono::steady_clock::now() - **cancellationTime
+                    < 150ms);
+                assert(!session->isClosed());
+                assert(cancelled->connectionCount() == 1);
+                assert(cancelled->requests().size() == 1);
+                assert(peer->connectionCount() == 1);
+                assert(peer->requests().size() == 3);
+                assertRequest(cancelled->requests()[0], 1);
+                assertRequest(peer->requests()[0], 1);
+                assertRequest(peer->requests()[1], 1, 40004, 65);
+                assertRequest(peer->requests()[2], 1, 40069, 2);
+                assert(*replacementCount == 1);
+                self->throwingFactoryDuringClosedReplacementReportsError();
+            });
+        neubau::common::Reactor::loop()->setTimeout(
+            10,
+            [self = shared_from_this(),
+             cancelled,
+             peer,
+             cancelledControl,
+             cancellationTime](hv::TimerID) {
+                self->assertReactorThread();
+                assert(cancelled->requests().size() == 1);
+                assert(peer->requests().size() == 1);
+                cancellationTime->emplace(std::chrono::steady_clock::now());
+                cancelledControl->cancel();
+                cancelledControl->cancel();
+            });
+    }
+
+    void throwingFactoryDuringClosedReplacementReportsError() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{});
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            100ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        session->close();
+        assert(session->isClosed());
+        auto factoryCalls = std::make_shared<std::size_t>();
+        auto errors = std::make_shared<std::size_t>();
+        auto scanner = std::make_shared<SunspecScanner>(
+            session,
+            [self = shared_from_this(), factoryCalls]()
+                -> std::shared_ptr<ModbusSession> {
+                self->assertReactorThread();
+                ++*factoryCalls;
+                throw std::runtime_error("closed replacement factory failed");
+            });
+
+        scanner->scan().collect(
+            [](const auto&) { assert(false); },
+            [self = shared_from_this(),
+             fake,
+             session,
+             scanner,
+             factoryCalls,
+             errors](std::exception_ptr error) {
+                self->assertReactorThread();
+                ++*errors;
+                assert(*errors == 1);
+                try {
+                    std::rethrow_exception(error);
+                } catch (const std::runtime_error& exception) {
+                    assert(
+                        std::string_view{exception.what()}
+                        == "closed replacement factory failed");
+                }
+                assert(*factoryCalls == 1);
+                assert(fake->requests().empty());
+                self->throwingFactoryDuringSubscriptionAcquisitionReportsError();
+            },
+            [] { assert(false); });
+    }
+
+    void throwingFactoryDuringSubscriptionAcquisitionReportsError() {
+        auto fake = std::make_shared<ModbusFakeServer>(simpleCompleteChain());
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            100ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto factoryCalls = std::make_shared<std::size_t>();
+        auto errors = std::make_shared<std::size_t>();
+        auto scanner = std::make_shared<SunspecScanner>(
+            session,
+            [self = shared_from_this(), factoryCalls]()
+                -> std::shared_ptr<ModbusSession> {
+                self->assertReactorThread();
+                ++*factoryCalls;
+                throw std::runtime_error("subscription factory failed");
+            });
+
+        scanner->scan().collect(
+            [](const auto&) {},
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(),
+             fake,
+             session,
+             scanner,
+             factoryCalls,
+             errors] {
+                self->assertReactorThread();
+                assert(*factoryCalls == 0);
+                assert(fake->requests().size() == 3);
+                scanner->scan().collect(
+                    [](const auto&) { assert(false); },
                     [self,
                      fake,
                      session,
                      scanner,
-                     cancelledControl,
-                     survivingControl,
-                     replacementCount,
-                     cancelledCompletions,
-                     survivingCompletions,
-                     candidates](hv::TimerID) {
+                     factoryCalls,
+                     errors](std::exception_ptr error) {
                         self->assertReactorThread();
-                        assert(*cancelledCompletions == 1);
-                        assert(*survivingCompletions == 1);
-                        assert(*candidates == 1);
-                        assert(fake->connectionCount() == 1);
-                        assert(fake->requests().size() == 4);
-                        assertRequest(fake->requests()[0], 1);
-                        assertRequest(fake->requests()[1], 1);
-                        assertRequest(fake->requests()[2], 1, 40004, 65);
-                        assertRequest(fake->requests()[3], 1, 40069, 2);
-                        assert(*replacementCount == 0);
+                        ++*errors;
+                        assert(*errors == 1);
+                        try {
+                            std::rethrow_exception(error);
+                        } catch (const std::runtime_error& exception) {
+                            assert(
+                                std::string_view{exception.what()}
+                                == "subscription factory failed");
+                        }
+                        assert(*factoryCalls == 1);
+                        assert(fake->requests().size() == 3);
                         self->exhaustionCompletesWithoutEmission();
-                    });
-            });
-        neubau::common::Reactor::loop()->setTimeout(
-            5,
-            [self = shared_from_this(), fake, cancelledControl](hv::TimerID) {
-                self->assertReactorThread();
-                assert(fake->requests().size() == 1);
-                cancelledControl->cancel();
-                cancelledControl->cancel();
+                    },
+                    [] { assert(false); });
             });
     }
 

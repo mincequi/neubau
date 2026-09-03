@@ -191,16 +191,43 @@ private:
     bool _finished{};
 };
 
+class SessionProvider {
+public:
+    SessionProvider(
+        std::shared_ptr<modbus::ModbusSession> initialSession,
+        SunspecScanner::SessionFactory sessionFactory)
+        : _initialSession{std::move(initialSession)}
+        , _sessionFactory{std::move(sessionFactory)} {}
+
+    [[nodiscard]] std::shared_ptr<modbus::ModbusSession> acquire() {
+        const auto loop = common::Reactor::loop();
+        if (!loop->isRunning() || !loop->isInLoopThread()) {
+            throw std::logic_error(
+                "SunSpec sessions must be acquired on the Reactor loop");
+        }
+        if (!_initialAcquired) {
+            _initialAcquired = true;
+            return _initialSession;
+        }
+        return _sessionFactory();
+    }
+
+private:
+    std::shared_ptr<modbus::ModbusSession> _initialSession;
+    SunspecScanner::SessionFactory _sessionFactory;
+    bool _initialAcquired{};
+};
+
 class ScanState : public std::enable_shared_from_this<ScanState> {
 public:
     template<typename Observer>
     ScanState(
-        std::shared_ptr<modbus::ModbusSession> initialSession,
+        SunspecScanner::SessionFactory subscriptionSessionFactory,
         SunspecScanner::SessionFactory replacementSessionFactory,
         SunspecDiscoveryOptions options,
         CancelBinder bindCancellation,
         Observer observer)
-        : _session{std::move(initialSession)}
+        : _subscriptionSessionFactory{std::move(subscriptionSessionFactory)}
         , _replacementSessionFactory{std::move(replacementSessionFactory)}
         , _options{std::move(options)}
         , _bindCancellation{std::move(bindCancellation)} {
@@ -235,6 +262,9 @@ private:
             self->cancelInLoop();
         });
         if (_finished) {
+            return;
+        }
+        if (!acquireSession()) {
             return;
         }
         if (_session->isClosed() && !replaceClosedSession()) {
@@ -491,13 +521,34 @@ private:
     }
 
     [[nodiscard]] bool replaceClosedSession() {
-        auto replacement = _replacementSessionFactory();
-        if (replacement) {
-            _session = std::move(replacement);
-            return true;
+        try {
+            auto replacement = _replacementSessionFactory();
+            if (replacement) {
+                _session = std::move(replacement);
+                return true;
+            }
+        } catch (...) {
+            fail(std::current_exception());
+            return false;
         }
         fail(std::make_exception_ptr(std::logic_error(
             "SunSpec session replacement factory returned null")));
+        return false;
+    }
+
+    [[nodiscard]] bool acquireSession() {
+        try {
+            auto session = _subscriptionSessionFactory();
+            if (session) {
+                _session = std::move(session);
+                return true;
+            }
+        } catch (...) {
+            fail(std::current_exception());
+            return false;
+        }
+        fail(std::make_exception_ptr(std::logic_error(
+            "SunSpec session acquisition factory returned null")));
         return false;
     }
 
@@ -579,6 +630,7 @@ private:
     }
 
     std::shared_ptr<modbus::ModbusSession> _session;
+    SunspecScanner::SessionFactory _subscriptionSessionFactory;
     SunspecScanner::SessionFactory _replacementSessionFactory;
     SunspecDiscoveryOptions _options;
     CancelBinder _bindCancellation;
@@ -658,11 +710,15 @@ SunspecScanner::SunspecScanner(
     if (!_replacementSessionFactory) {
         _replacementSessionFactory = defaultReplacementFactory(_session);
     }
+    auto provider = std::make_shared<SessionProvider>(
+        _session,
+        _replacementSessionFactory);
+    _subscriptionSessionFactory = [provider] { return provider->acquire(); };
 }
 
 common::Flow<SunspecThing> SunspecScanner::scan() const {
     auto observable = rpp::source::create<SunspecThing>(
-        [session = _session,
+        [subscriptionSessionFactory = _subscriptionSessionFactory,
          replacementSessionFactory = _replacementSessionFactory,
          options = _options](
             auto&& observer) {
@@ -672,7 +728,7 @@ common::Flow<SunspecThing> SunspecScanner::scan() const {
                     control->bind(std::move(cancellation));
                 };
             auto state = std::make_shared<ScanState>(
-                std::move(session),
+                std::move(subscriptionSessionFactory),
                 std::move(replacementSessionFactory),
                 std::move(options),
                 std::move(bindCancellation),
@@ -690,7 +746,7 @@ common::Flow<SunspecThing> SunspecScanner::scan(
     }
 
     auto observable = rpp::source::create<SunspecThing>(
-        [session = _session,
+        [subscriptionSessionFactory = _subscriptionSessionFactory,
          replacementSessionFactory = _replacementSessionFactory,
          options = _options,
          control = std::move(control)](
@@ -700,7 +756,7 @@ common::Flow<SunspecThing> SunspecScanner::scan(
                     control->bind(std::move(cancellation));
                 };
             auto state = std::make_shared<ScanState>(
-                std::move(session),
+                std::move(subscriptionSessionFactory),
                 std::move(replacementSessionFactory),
                 std::move(options),
                 std::move(bindCancellation),

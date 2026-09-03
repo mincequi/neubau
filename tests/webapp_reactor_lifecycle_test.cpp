@@ -14,6 +14,26 @@
 int main() {
     using namespace std::chrono_literals;
 
+    bool invalidRejected{};
+    try {
+        neubau::sunspec::SunspecDiscovery invalid{
+            neubau::sunspec::SunspecDiscoveryOptions{}};
+    } catch (const std::invalid_argument&) {
+        invalidRejected = true;
+    }
+    assert(invalidRejected);
+
+    {
+        neubau::sunspec::SunspecDiscovery prepared{
+            neubau::sunspec::SunspecDiscoveryOptions{
+                .modbus = {
+                    .cidrs = {"127.0.0.1/32"},
+                    .port = 65000,
+                },
+            }};
+        static_cast<void>(prepared.candidates());
+    }
+
     const auto path =
         std::filesystem::path{"webapp_reactor_lifecycle_test.toml"};
     std::filesystem::remove(path);

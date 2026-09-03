@@ -483,9 +483,11 @@ SunspecDiscovery::~SunspecDiscovery() noexcept {
 
 void SunspecDiscovery::teardownState(std::shared_ptr<State> state) noexcept {
     try {
+        if (!state || !state->started || state->terminal || state->stopping) {
+            return;
+        }
         const auto loop = common::Reactor::loop();
-        if (!loop->isRunning() || !loop->isInLoopThread() || !state
-            || !state->started || state->terminal || state->stopping) {
+        if (!loop->isRunning() || !loop->isInLoopThread()) {
             return;
         }
         state->stopping = true;
@@ -498,7 +500,7 @@ void SunspecDiscovery::teardownState(std::shared_ptr<State> state) noexcept {
 
 void SunspecDiscovery::teardown() noexcept {
     auto state = std::move(_state);
-    if (!state) {
+    if (!state || !state->started) {
         return;
     }
 
