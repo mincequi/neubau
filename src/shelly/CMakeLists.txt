@@ -2,6 +2,7 @@ add_library(
     neubau_shelly
     ShellyDiscovery.cpp
     ShellyThing.cpp
+    ShellyThingFactory.cpp
 )
 add_library(neubau::shelly ALIAS neubau_shelly)
 

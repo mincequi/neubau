@@ -1,15 +1,9 @@
 #include "webapp/WebAppService.hpp"
 
-#include "common/Reactor.hpp"
-#include "webapp/ThingApi.hpp"
-
 #include <cmrc/cmrc.hpp>
-#include <hv/WebSocketServer.h>
 
 #include <iostream>
-#include <optional>
 #include <string>
-#include <utility>
 
 CMRC_DECLARE(neubau_webapp_resources);
 
@@ -25,58 +19,45 @@ std::string load_resource(const char* path) {
 } // namespace
 
 WebAppService::WebAppService(common::ThingRepository& things)
-    : _things{things} {}
-
-int WebAppService::run(std::function<void()> onStarted) {
-    const auto index_html = load_resource("index.html");
-
-    hv::HttpService service;
-    service.GET("/", [index_html](HttpRequest*, HttpResponse* response) {
+    : _api{things}
+    , _indexHtml{load_resource("index.html")} {
+    _service.GET("/", [this](HttpRequest*, HttpResponse* response) {
         response->SetContentType("text/html");
-        response->body = index_html;
+        response->body = _indexHtml;
         return 200;
     });
-    service.GET("/health", [](HttpRequest*, HttpResponse* response) {
+    _service.GET("/health", [](HttpRequest*, HttpResponse* response) {
         return response->String("ok\n");
     });
+    _api.registerRoutes(_service);
 
-    ThingApi api{_things};
-    api.registerRoutes(service);
-
-    hv::WebSocketService websocket;
-    websocket.onopen = [](
+    _websocket.onopen = [](
                            const WebSocketChannelPtr& channel,
                            const HttpRequestPtr& request) {
         if (request->Path() != webSocketPath) {
             channel->close();
         }
     };
-    websocket.onmessage = [](
+    _websocket.onmessage = [](
                               const WebSocketChannelPtr& channel,
                               const std::string& message) {
         channel->send(message);
     };
 
-    hv::WebSocketServer server{&websocket};
-    server.registerHttpService(&service);
-    server.setPort(serverPort);
-    server.setThreadNum(1);
-    std::optional<common::Reactor::RunScope> reactorRun;
-    server.onWorkerStart = [
-                               &server,
-                               &reactorRun,
-                               onStarted = std::move(onStarted)] {
-        common::Reactor::setLoop(server.loop());
-        reactorRun.emplace(common::Reactor::enterRun());
-        if (onStarted) {
-            onStarted();
-        }
-    };
+    _server.registerHttpService(&_service);
+    _server.setPort(serverPort);
+    _server.setThreadNum(1);
+}
 
+int WebAppService::start() {
     std::cout << "neubau listening on http://127.0.0.1:"
               << serverPort << " and ws://127.0.0.1:"
               << serverPort << webSocketPath << '\n';
-    return server.run();
+    return _server.start();
+}
+
+void WebAppService::stop() {
+    _server.stop();
 }
 
 } // namespace neubau::webapp

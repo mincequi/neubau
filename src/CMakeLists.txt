@@ -5,7 +5,7 @@ add_subdirectory(shelly)
 add_subdirectory(sunspec)
 add_subdirectory(webapp)
 
-add_executable(neubau main.cpp)
+add_executable(neubau main.cpp DiscoveryServices.cpp ThingFactories.cpp)
 
 target_link_libraries(
     neubau

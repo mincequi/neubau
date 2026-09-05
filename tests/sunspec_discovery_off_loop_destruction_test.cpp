@@ -21,7 +21,7 @@ namespace {
 using namespace std::chrono_literals;
 
 class PendingEndpointDiscovery
-    : public neubau::common::Discovery<neubau::common::OpenPort>
+    : public neubau::common::ThingDiscovery<neubau::common::OpenPort>
     , public std::enable_shared_from_this<PendingEndpointDiscovery> {
 public:
     explicit PendingEndpointDiscovery(neubau::common::OpenPort endpoint)
@@ -85,7 +85,7 @@ namespace neubau::sunspec::testing {
 class SunspecDiscoveryTestAccess {
 public:
     using Factory = std::function<std::shared_ptr<
-        common::Discovery<common::OpenPort>>(common::PortScannerOptions)>;
+        common::ThingDiscovery<common::OpenPort>>(common::PortScannerOptions)>;
 
     [[nodiscard]] static std::shared_ptr<SunspecDiscovery> create(
         SunspecDiscoveryOptions options,
@@ -124,7 +124,7 @@ int main() {
                 },
                 [endpoints](neubau::common::PortScannerOptions) {
                     return std::shared_ptr<
-                        neubau::common::Discovery<neubau::common::OpenPort>>{
+                        neubau::common::ThingDiscovery<neubau::common::OpenPort>>{
                         endpoints};
                 }));
     (*owner)->candidates().collect(

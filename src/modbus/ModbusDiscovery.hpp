@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/Discovery.hpp"
+#include "common/ThingDiscovery.hpp"
 #include "common/Thing.hpp"
 
 #include <chrono>
@@ -66,7 +66,7 @@ readHoldingRegisters(
     std::chrono::milliseconds responseTimeout =
         std::chrono::milliseconds{500});
 
-class ModbusDiscovery : public common::Discovery<ModbusThing> {
+class ModbusDiscovery : public common::ThingDiscovery<ModbusThing> {
 public:
     explicit ModbusDiscovery(ModbusDiscoveryOptions options);
     ~ModbusDiscovery() override;

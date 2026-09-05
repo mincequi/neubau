@@ -1,8 +1,10 @@
-#include "common/Discovery.hpp"
+#include "common/ThingDiscovery.hpp"
 #include "common/PortScanner.hpp"
 #include "common/Thing.hpp"
+#include "mdns/MdnsDiscovery.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 #include "shelly/ShellyDiscovery.hpp"
+#include "shelly/ShellyThing.hpp"
 #include "sunspec/SunspecDiscovery.hpp"
 
 #include <concepts>
@@ -10,18 +12,18 @@
 
 static_assert(
     std::is_abstract_v<
-        neubau::common::Discovery<neubau::common::OpenPort>>);
+        neubau::common::ThingDiscovery<neubau::common::OpenPort>>);
 static_assert(std::is_base_of_v<
-              neubau::common::Discovery<neubau::common::OpenPort>,
+              neubau::common::ThingDiscovery<neubau::common::OpenPort>,
               neubau::common::PortScanner>);
 static_assert(std::is_base_of_v<
-              neubau::common::Discovery<neubau::modbus::ModbusThing>,
+              neubau::common::ThingDiscovery<neubau::modbus::ModbusThing>,
               neubau::modbus::ModbusDiscovery>);
 static_assert(std::is_base_of_v<
-              neubau::common::Discovery<neubau::shelly::ShellyThing>,
+              neubau::common::ThingDiscovery<neubau::mdns::MdnsService>,
               neubau::shelly::ShellyDiscovery>);
 static_assert(std::is_base_of_v<
-              neubau::common::Discovery<neubau::sunspec::SunspecThing>,
+              neubau::common::ThingDiscovery<neubau::sunspec::SunspecThing>,
               neubau::sunspec::SunspecDiscovery>);
 static_assert(std::is_base_of_v<
               neubau::common::Thing,

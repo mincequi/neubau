@@ -5,9 +5,9 @@
 namespace neubau::common {
 
 template<typename Candidate>
-class Discovery {
+class ThingDiscovery {
 public:
-    virtual ~Discovery() = default;
+    virtual ~ThingDiscovery() = default;
 
     virtual void start() = 0;
     virtual void stop() = 0;

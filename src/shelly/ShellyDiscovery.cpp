@@ -8,7 +8,6 @@
 #include <cctype>
 #include <exception>
 #include <map>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,15 +15,13 @@
 namespace neubau::shelly {
 
 struct ShellyDiscovery::State {
-    explicit State(std::chrono::milliseconds timeout)
-        : mdns{std::make_shared<mdns::MdnsDiscovery>()}
-        , timeout{timeout}
+    explicit State(mdns::MdnsDiscovery& mdns)
+        : mdns{mdns}
         , candidates{subject.get_observable().as_dynamic()} {}
 
-    std::shared_ptr<mdns::MdnsDiscovery> mdns;
-    std::chrono::milliseconds timeout;
-    rpp::subjects::publish_subject<ShellyThing> subject;
-    common::Flow<ShellyThing> candidates;
+    mdns::MdnsDiscovery& mdns;
+    rpp::subjects::publish_subject<mdns::MdnsService> subject;
+    common::Flow<mdns::MdnsService> candidates;
 };
 
 namespace {
@@ -94,85 +91,51 @@ void mergeService(
 
 } // namespace
 
-ShellyDiscovery::ShellyDiscovery(std::chrono::milliseconds timeout)
-    : _state{std::make_shared<State>(timeout)} {}
-
-ShellyDiscovery::~ShellyDiscovery() {
-    stop();
-}
-
-common::Flow<ShellyThing> ShellyDiscovery::scan() const {
-    if (!_state) {
-        throw std::logic_error("Shelly discovery has been moved from");
-    }
-
-    auto observable = rpp::source::create<ShellyThing>(
-        [state = _state](auto&& observer) {
-            using Observer = std::decay_t<decltype(observer)>;
-            struct Collection {
-                std::shared_ptr<Observer> observer;
-                std::map<std::string, mdns::MdnsService> devices;
-            };
-            auto collection = std::make_shared<Collection>(Collection{
-                .observer = std::make_shared<Observer>(
-                    std::move(observer)),
-            });
-            auto subscription =
-                std::make_shared<rpp::composite_disposable_wrapper>(
-                    state->mdns->services().subscribe(
-                        [collection](const mdns::MdnsService& service) {
-                            if (!ShellyDiscovery::isShellyService(service)) {
-                                return;
-                            }
-                            const auto key =
-                                lowercase(instanceId(service));
-                            mergeService(
-                                collection->devices[key], service);
-                        },
-                        [collection](std::exception_ptr error) {
-                            collection->observer->on_error(error);
-                        },
-                        [] {}));
-            state->mdns->discover(std::string{shellyServiceType});
-            state->mdns->discover(std::string{httpServiceType});
-            common::Reactor::loop()->setTimeout(
-                static_cast<int>(state->timeout.count()),
-                [collection, subscription](hv::TimerID) {
-                    subscription->dispose();
-                    for (auto& [id, service] : collection->devices) {
-                        static_cast<void>(id);
-                        collection->observer->on_next(
-                            ShellyThing{std::move(service)});
+ShellyDiscovery::ShellyDiscovery(
+    mdns::MdnsDiscovery& mdns, std::chrono::milliseconds timeout)
+    : _state{std::make_shared<State>(mdns)} {
+    auto state = _state;
+    auto devices =
+        std::make_shared<std::map<std::string, mdns::MdnsService>>();
+    auto subscription =
+        std::make_shared<rpp::composite_disposable_wrapper>(
+            state->mdns.services().subscribe(
+                [devices](const mdns::MdnsService& service) {
+                    if (!ShellyDiscovery::isShellyService(service)) {
+                        return;
                     }
-                    collection->observer->on_completed();
-                });
+                    const auto key = lowercase(instanceId(service));
+                    mergeService((*devices)[key], service);
+                },
+                [state](std::exception_ptr error) {
+                    state->subject.get_observer().on_error(error);
+                },
+                [] {}));
+    state->mdns.discover(std::string{shellyServiceType});
+    state->mdns.discover(std::string{httpServiceType});
+    common::Reactor::loop()->setTimeout(
+        static_cast<int>(timeout.count()),
+        [state, devices, subscription](hv::TimerID) {
+            subscription->dispose();
+            for (auto& [id, service] : *devices) {
+                static_cast<void>(id);
+                state->subject.get_observer().on_next(std::move(service));
+            }
+            state->subject.get_observer().on_completed();
         });
-    return common::Flow<ShellyThing>{observable.as_dynamic()};
 }
 
 void ShellyDiscovery::start() {
-    auto state = _state;
-    static_cast<void>(scan().collect(
-        [state](ShellyThing thing) {
-            state->subject.get_observer().on_next(std::move(thing));
-        },
-        [state](std::exception_ptr error) {
-            state->subject.get_observer().on_error(error);
-        },
-        [state] {
-            state->subject.get_observer().on_completed();
-        }));
+    // Collection already began in the constructor.
 }
 
-const common::Flow<ShellyThing>& ShellyDiscovery::candidates()
+const common::Flow<mdns::MdnsService>& ShellyDiscovery::candidates()
     const noexcept {
     return _state->candidates;
 }
 
 void ShellyDiscovery::stop() {
-    if (_state) {
-        _state->mdns->stop();
-    }
+    // The injected MdnsDiscovery's lifecycle is owned by the caller.
 }
 
 bool ShellyDiscovery::isShellyService(

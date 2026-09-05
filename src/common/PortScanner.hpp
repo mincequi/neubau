@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/Discovery.hpp"
+#include "common/ThingDiscovery.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -27,7 +27,7 @@ struct PortScannerOptions {
     std::size_t maxConcurrency{64};
 };
 
-class PortScanner : public Discovery<OpenPort> {
+class PortScanner : public ThingDiscovery<OpenPort> {
 public:
     explicit PortScanner(PortScannerOptions options);
     ~PortScanner() override;

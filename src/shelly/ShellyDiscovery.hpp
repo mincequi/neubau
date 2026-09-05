@@ -1,26 +1,32 @@
 #pragma once
 
-#include "common/Discovery.hpp"
+#include "common/ThingDiscovery.hpp"
 #include "mdns/MdnsDiscovery.hpp"
-#include "shelly/ShellyThing.hpp"
 
 #include <chrono>
 #include <memory>
 
 namespace neubau::shelly {
 
-class ShellyDiscovery : public common::Discovery<ShellyThing> {
+class ShellyDiscovery : public common::ThingDiscovery<mdns::MdnsService> {
 public:
+    // `mdns` must outlive this object; it is a continuously running,
+    // externally owned discovery instance that this class registers
+    // its service-type interests with.
     explicit ShellyDiscovery(
+        mdns::MdnsDiscovery& mdns,
         std::chrono::milliseconds timeout = std::chrono::seconds{3});
-    ~ShellyDiscovery() override;
+    ~ShellyDiscovery() override = default;
 
     ShellyDiscovery(const ShellyDiscovery&) = delete;
     ShellyDiscovery& operator=(const ShellyDiscovery&) = delete;
 
+    // No-ops: collection begins at construction and runs off the
+    // injected, continuously running MdnsDiscovery, so there is no
+    // separate lifecycle to start or stop.
     void start() override;
     void stop() override;
-    [[nodiscard]] const common::Flow<ShellyThing>& candidates()
+    [[nodiscard]] const common::Flow<mdns::MdnsService>& candidates()
         const noexcept override;
 
     [[nodiscard]] static bool isShellyService(
@@ -28,8 +34,6 @@ public:
 
 private:
     struct State;
-
-    [[nodiscard]] common::Flow<ShellyThing> scan() const;
 
     std::shared_ptr<State> _state;
 };

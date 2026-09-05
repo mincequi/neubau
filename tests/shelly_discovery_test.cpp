@@ -1,5 +1,6 @@
 #include "shelly/ShellyDiscovery.hpp"
 #include "shelly/ShellyThing.hpp"
+#include "shelly/ShellyThingFactory.hpp"
 
 #include <cassert>
 #include <sstream>
@@ -50,4 +51,9 @@ int main() {
     service.hostname = "printer.local.";
     service.txt.clear();
     assert(!neubau::shelly::ShellyDiscovery::isShellyService(service));
+
+    const neubau::shelly::ShellyThingFactory factory;
+    const auto factoryThing = factory.create(fallbackService);
+    assert(factoryThing->id() == "shellyplus1pm-aabbcc");
+    assert(factoryThing->model() == "Plus1PM");
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/Discovery.hpp"
+#include "common/ThingDiscovery.hpp"
 #include "common/PortScanner.hpp"
 #include "common/Thing.hpp"
 #include "modbus/ModbusSession.hpp"
@@ -65,7 +65,7 @@ struct SunspecThing : common::Thing {
 
 std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing);
 
-class SunspecDiscovery : public common::Discovery<SunspecThing> {
+class SunspecDiscovery : public common::ThingDiscovery<SunspecThing> {
 public:
     explicit SunspecDiscovery(SunspecDiscoveryOptions options);
     ~SunspecDiscovery() noexcept override;
@@ -93,7 +93,7 @@ public:
 
 private:
     using PortScannerFactory = std::function<std::shared_ptr<
-        common::Discovery<common::OpenPort>>(common::PortScannerOptions)>;
+        common::ThingDiscovery<common::OpenPort>>(common::PortScannerOptions)>;
 
     SunspecDiscovery(
         SunspecDiscoveryOptions options,

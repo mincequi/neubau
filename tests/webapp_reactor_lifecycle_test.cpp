@@ -40,6 +40,7 @@ int main() {
     neubau::common::Persistence persistence{path};
     neubau::common::ThingRepository things{persistence};
     neubau::webapp::WebAppService webapp{things};
+    assert(webapp.start() == 0);
 
     auto active = std::make_shared<neubau::sunspec::SunspecDiscovery>(
         neubau::sunspec::SunspecDiscoveryOptions{
@@ -57,16 +58,17 @@ int main() {
         [] { assert(false); });
 
     bool started{};
-    const auto result = webapp.run([&] {
+    neubau::common::Reactor::loop()->queueInLoop([&] {
         started = true;
         active->start();
         neubau::common::Reactor::stop();
     });
-    assert(result == 0);
+    neubau::common::Reactor::run();
     assert(started);
 
     active->stop();
     active.reset();
+    webapp.stop();
 
     neubau::sunspec::SunspecDiscovery afterWebappRun{
         neubau::sunspec::SunspecDiscoveryOptions{

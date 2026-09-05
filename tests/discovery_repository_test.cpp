@@ -1,4 +1,4 @@
-#include "common/Discovery.hpp"
+#include "common/ThingDiscovery.hpp"
 #include "common/DiscoveryRepository.hpp"
 #include "common/Persistence.hpp"
 #include "common/ThingRepository.hpp"
@@ -19,7 +19,7 @@
 namespace {
 
 class FakeSunspecDiscovery final
-    : public neubau::common::Discovery<neubau::sunspec::SunspecThing> {
+    : public neubau::common::ThingDiscovery<neubau::sunspec::SunspecThing> {
 public:
     FakeSunspecDiscovery()
         : _candidates{_subject.get_observable().as_dynamic()} {}

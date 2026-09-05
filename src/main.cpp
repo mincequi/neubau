@@ -1,214 +1,34 @@
-#include "common/DiscoveryRepository.hpp"
+#include "DiscoveryServices.hpp"
 #include <plog/Appenders/ColorConsoleAppender.h>
 #include <plog/Formatters/TxtFormatter.h>
 #include <plog/Init.h>
 #include <plog/Log.h>
 
 #include "common/Persistence.hpp"
+#include "common/Reactor.hpp"
 #include "common/ThingRepository.hpp"
-#include "mdns/MdnsDiscovery.hpp"
-#include "modbus/ModbusDiscovery.hpp"
-#include "shelly/ShellyDiscovery.hpp"
-#include "sunspec/SunspecDiscovery.hpp"
 #include "webapp/WebAppService.hpp"
 
-#include <algorithm>
-#include <cctype>
-#include <chrono>
-#include <exception>
-#include <functional>
-#include <memory>
-#include <string>
-#include <string_view>
-
-namespace {
-
-constexpr std::string_view httpServiceType{"_http._tcp.local."};
-
-std::string lowercase(std::string_view value) {
-    std::string result{value};
-    std::transform(
-        result.begin(),
-        result.end(),
-        result.begin(),
-        [](char character) {
-            return static_cast<char>(
-                std::tolower(static_cast<unsigned char>(character)));
-        });
-    return result;
-}
-
-std::string txtValue(
-    const neubau::mdns::MdnsService& service,
-    std::string_view key) {
-    const auto normalizedKey = lowercase(key);
-    for (const auto& [candidate, value] : service.txt) {
-        if (lowercase(candidate) == normalizedKey) {
-            return value;
-        }
-    }
-    return {};
-}
-
-bool isGoECharger(const neubau::mdns::MdnsService& service) {
-    if (lowercase(service.serviceType) != httpServiceType) {
-        return false;
-    }
-
-    const auto manufacturer = lowercase(txtValue(service, "manufacturer"));
-    const auto deviceFamily = lowercase(txtValue(service, "devicefamily"));
-    if (manufacturer == "go-e" && deviceFamily == "goecharger") {
-        return true;
-    }
-
-    return lowercase(service.instanceName).starts_with("go-echarger")
-        || lowercase(service.hostname).starts_with("go-echarger");
-}
-
-std::string endpoint(const neubau::mdns::MdnsService& service) {
-    const auto& host = service.addresses.empty()
-        ? service.hostname
-        : service.addresses.front();
-    return host + ':' + std::to_string(service.port);
-}
-
-void logService(const neubau::mdns::MdnsService& service) {
-    if (neubau::shelly::ShellyDiscovery::isShellyService(service)) {
-        PLOGI << "Shelly discovered: " << service.instanceName
-              << " at " << endpoint(service);
-        return;
-    }
-    if (isGoECharger(service)) {
-        PLOGI << "go-eCharger discovered: "
-              << txtValue(service, "serial")
-              << " (" << txtValue(service, "devicetype") << ") at "
-              << endpoint(service);
-    }
-}
-
-} // namespace
+using namespace neubau;
 
 int main() {
     static plog::ColorConsoleAppender<plog::TxtFormatter> console;
     plog::init(plog::info, &console);
 
-    neubau::common::Persistence persistence;
-    neubau::common::ThingRepository things{persistence};
-    neubau::webapp::WebAppService webApp{things};
-    std::function<void()> shutdown;
-    const auto result = webApp.run(
-        [&shutdown, &things] {
-            auto loggingDiscovery =
-                std::make_shared<neubau::mdns::MdnsDiscovery>();
-            auto activeLoggingSubscription =
-                loggingDiscovery->services().subscribe(
-                    logService,
-                    [](std::exception_ptr error) {
-                        try {
-                            std::rethrow_exception(error);
-                        } catch (const std::exception& exception) {
-                            PLOGE << "Service discovery failed: "
-                                  << exception.what();
-                        }
-                    },
-                    [] { PLOGI << "Service discovery stopped"; });
-            auto loggingSubscription =
-                std::make_shared<decltype(activeLoggingSubscription)>(
-                    std::move(activeLoggingSubscription));
+    common::Persistence persistence;
+    common::ThingRepository things{persistence};
 
-            auto shellyDiscovery =
-                std::make_shared<neubau::shelly::ShellyDiscovery>();
-            auto activeShellySubscription =
-                shellyDiscovery->candidates().subscribe(
-                    [&things](neubau::shelly::ShellyThing thing) {
-                        things.add(
-                            std::make_shared<neubau::shelly::ShellyThing>(
-                                std::move(thing)));
-                    },
-                    [](std::exception_ptr error) {
-                        try {
-                            std::rethrow_exception(error);
-                        } catch (const std::exception& exception) {
-                            PLOGE << "Shelly discovery failed: "
-                                  << exception.what();
-                        }
-                    },
-                    [] { PLOGI << "Shelly discovery stopped"; });
-            auto shellySubscription =
-                std::make_shared<decltype(activeShellySubscription)>(
-                    std::move(activeShellySubscription));
-
-            std::shared_ptr<neubau::sunspec::SunspecDiscovery>
-                sunspecDiscovery;
-            std::shared_ptr<
-                rpp::composite_disposable_wrapper> sunspecSubscription;
-            if (const auto cidr =
-                    neubau::modbus::ModbusDiscovery::primaryIpv4Cidr(24)) {
-                sunspecDiscovery =
-                    std::make_shared<neubau::sunspec::SunspecDiscovery>(
-                        neubau::sunspec::SunspecDiscoveryOptions{
-                            .modbus = {
-                                .cidrs = {*cidr},
-                                .port = 502,
-                                .connectTimeout =
-                                    std::chrono::milliseconds{250},
-                                .responseTimeout =
-                                    std::chrono::milliseconds{500},
-                                .maxConcurrency = 32,
-                                .maxHosts = 4096,
-                            },
-                            .maxModels = 256,
-                            .maxRegisterSpan = 10000,
-                        });
-                auto activeSunspecSubscription =
-                    neubau::common::addCandidatesToRepository(
-                        *sunspecDiscovery,
-                        things,
-                        [](std::exception_ptr error) {
-                            try {
-                                std::rethrow_exception(error);
-                            } catch (const std::exception& exception) {
-                                PLOGE << "SunSpec discovery failed: "
-                                      << exception.what();
-                            }
-                        },
-                        [] { PLOGI << "SunSpec discovery stopped"; });
-                sunspecSubscription =
-                    std::make_shared<decltype(activeSunspecSubscription)>(
-                        std::move(activeSunspecSubscription));
-                PLOGI << "SunSpec discovery starting in " << *cidr;
-            } else {
-                PLOGI << "SunSpec discovery skipped: no primary IPv4 CIDR";
-            }
-
-            loggingDiscovery->discover("_shelly._tcp");
-            loggingDiscovery->discover("_http._tcp");
-            shellyDiscovery->start();
-            if (sunspecDiscovery) {
-                sunspecDiscovery->start();
-            }
-            shutdown = [
-                           loggingDiscovery = std::move(loggingDiscovery),
-                           loggingSubscription = std::move(loggingSubscription),
-                           shellyDiscovery = std::move(shellyDiscovery),
-                           shellySubscription = std::move(shellySubscription),
-                           sunspecDiscovery = std::move(sunspecDiscovery),
-                           sunspecSubscription =
-                               std::move(sunspecSubscription)] {
-                if (sunspecSubscription) {
-                    sunspecSubscription->dispose();
-                }
-                if (sunspecDiscovery) {
-                    sunspecDiscovery->stop();
-                }
-                shellySubscription->dispose();
-                shellyDiscovery->stop();
-                loggingSubscription->dispose();
-                loggingDiscovery->stop();
-            };
-        });
-    if (shutdown) {
-        shutdown();
+    webapp::WebAppService webApp{things};
+    if (const auto result = webApp.start(); result != 0) {
+        return result;
     }
-    return result;
+
+    DiscoveryServices discovery{things};
+    discovery.start();
+
+    common::Reactor::run();
+
+    discovery.stop();
+    webApp.stop();
+    return 0;
 }

@@ -388,7 +388,7 @@ private:
     }
 
     std::weak_ptr<State> _state;
-    std::shared_ptr<common::Discovery<common::OpenPort>> _portScanner;
+    std::shared_ptr<common::ThingDiscovery<common::OpenPort>> _portScanner;
     std::optional<rpp::composite_disposable_wrapper> _portSubscription;
     std::vector<std::shared_ptr<EndpointScan>> _endpoints;
     bool _portsCompleted{};
