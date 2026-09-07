@@ -2,6 +2,7 @@ add_library(
     neubau_common
     ConfigRepository.cpp
     Persistence.cpp
+    PollingService.cpp
     PortScanner.cpp
     PortScannerSession.cpp
     Reactor.cpp

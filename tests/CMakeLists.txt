@@ -43,6 +43,11 @@ target_link_libraries(persistence_test PRIVATE neubau::common)
 
 add_test(NAME persistence_test COMMAND persistence_test)
 
+add_executable(polling_service_test polling_service_test.cpp)
+target_link_libraries(polling_service_test PRIVATE neubau::common)
+
+add_test(NAME polling_service_test COMMAND polling_service_test)
+
 add_executable(port_scanner_test port_scanner_test.cpp)
 target_link_libraries(port_scanner_test PRIVATE neubau::common)
 
