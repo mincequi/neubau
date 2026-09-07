@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/ThingRepository.hpp"
+#include "thing/ThingRepository.hpp"
 
 #include <hv/HttpService.h>
 #include <rpp/disposables.hpp>

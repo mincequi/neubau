@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common/ThingDiscovery.hpp"
-#include "common/ThingFactory.hpp"
+#include "thing/ThingDiscovery.hpp"
+#include "thing/ThingFactory.hpp"
 #include "sunspec/SunspecDiscovery.hpp"
 
 namespace neubau::sunspec {

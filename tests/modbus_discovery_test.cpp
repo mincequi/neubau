@@ -1,7 +1,7 @@
 #include "ModbusFakeServer.hpp"
 
 #include "common/Reactor.hpp"
-#include "common/ThingDiscovery.hpp"
+#include "thing/ThingDiscovery.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 
 #include <rpp/subjects/publish_subject.hpp>

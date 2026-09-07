@@ -1,7 +1,7 @@
-#include "common/ThingDiscovery.hpp"
+#include "thing/ThingDiscovery.hpp"
 #include "common/DiscoveryRepository.hpp"
 #include "common/Persistence.hpp"
-#include "common/ThingRepository.hpp"
+#include "thing/ThingRepository.hpp"
 #include "sunspec/SunspecDiscovery.hpp"
 
 #include <rpp/subjects/publish_subject.hpp>

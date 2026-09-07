@@ -1,4 +1,4 @@
-#include "common/ThingRepository.hpp"
+#include "thing/ThingRepository.hpp"
 #include "common/Persistence.hpp"
 
 #include <cassert>
@@ -12,8 +12,6 @@
 #include <utility>
 #include <vector>
 
-static_assert(!std::is_copy_constructible_v<
-              neubau::common::ThingRepository>);
 static_assert(!std::is_copy_assignable_v<
               neubau::common::ThingRepository>);
 

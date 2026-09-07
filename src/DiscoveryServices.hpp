@@ -2,7 +2,7 @@
 
 #include "ThingFactories.hpp"
 #include "common/PortScanner.hpp"
-#include "common/ThingRepository.hpp"
+#include "thing/ThingRepository.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 #include "modbus/ModbusDiscovery.hpp"
 #include "sunspec/SunspecDiscovery.hpp"
@@ -18,8 +18,8 @@ namespace neubau {
 class DiscoveryServices {
 public:
     explicit DiscoveryServices(common::ThingRepository& things);
+    ~DiscoveryServices();
 
-    void start();
     void stop();
 
     // Re-issues mDNS discover queries and restarts the (one-shot)
@@ -30,14 +30,14 @@ public:
     void discover();
 
 private:
-    void startLogging();
+    void startMdns();
     void startShelly();
     void startSunspec();
     void stopSunspecChain();
 
     common::ThingRepository& _things;
     mdns::MdnsDiscovery _mdnsDiscovery;
-    rpp::composite_disposable_wrapper _loggingSubscription;
+    rpp::composite_disposable_wrapper _mdnsSubscription;
     rpp::composite_disposable_wrapper _shellySubscription;
     std::shared_ptr<common::PortScanner> _portScanner;
     std::shared_ptr<modbus::ModbusDiscovery> _modbusDiscovery;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/ThingDiscovery.hpp"
+#include "thing/ThingDiscovery.hpp"
 #include "modbus/ModbusThing.hpp"
 #include "sunspec/SunspecThing.hpp"
 

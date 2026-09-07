@@ -1,6 +1,6 @@
 #include "webapp/ThingJson.hpp"
 
-#include "common/PropertyMap.hpp"
+#include "thing/PropertyMap.hpp"
 
 #include <cstdint>
 #include <type_traits>

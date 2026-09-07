@@ -2,8 +2,8 @@
 #include "common/Persistence.hpp"
 #include "common/PollingService.hpp"
 #include "common/Reactor.hpp"
-#include "common/Thing.hpp"
-#include "common/ThingRepository.hpp"
+#include "thing/Thing.hpp"
+#include "thing/ThingRepository.hpp"
 #include "common/Timer.hpp"
 #include "common/Types.hpp"
 

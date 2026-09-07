@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/PropertyMap.hpp"
+#include "thing/PropertyMap.hpp"
 #include "common/Types.hpp"
 #include "common/flow.hpp"
 

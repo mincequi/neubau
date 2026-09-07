@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/Thing.hpp"
+#include "thing/Thing.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 
 #include <iosfwd>

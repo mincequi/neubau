@@ -1,4 +1,4 @@
-#include "common/Thing.hpp"
+#include "thing/Thing.hpp"
 #include "common/Types.hpp"
 
 #include <cassert>

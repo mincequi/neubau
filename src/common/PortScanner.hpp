@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common/Subnet.hpp"
-#include "common/ThingDiscovery.hpp"
+#include "thing/ThingDiscovery.hpp"
 
 #include <atomic>
 #include <chrono>

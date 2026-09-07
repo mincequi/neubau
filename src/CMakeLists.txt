@@ -3,6 +3,7 @@ add_subdirectory(mdns)
 add_subdirectory(modbus)
 add_subdirectory(shelly)
 add_subdirectory(sunspec)
+add_subdirectory(thing)
 add_subdirectory(webapp)
 
 add_executable(neubau main.cpp DiscoveryServices.cpp ThingFactories.cpp)

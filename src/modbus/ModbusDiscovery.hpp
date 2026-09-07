@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common/PortScanner.hpp"
-#include "common/ThingDiscovery.hpp"
+#include "thing/ThingDiscovery.hpp"
 #include "modbus/ModbusThing.hpp"
 
 #include <chrono>

@@ -2,17 +2,18 @@
 
 #include "webapp/ThingApi.hpp"
 
+#include <hv/EventLoopThread.h>
 #include <hv/HttpService.h>
 #include <hv/WebSocketServer.h>
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <string_view>
 
-namespace neubau::webapp {
+using namespace hv;
 
-inline constexpr std::uint16_t serverPort{8030};
-inline constexpr std::string_view webSocketPath{"/ws"};
+namespace neubau::webapp {
 
 // Owns the HTTP/WebSocket server. It runs on its own worker thread and does
 // not drive the process' reactor loop: start()/stop() are non-blocking and
@@ -32,11 +33,14 @@ public:
     void stop();
 
 private:
+    EventLoopThread _dataThread;
+    std::set<WebSocketChannelPtr> _channels;
+
     ThingApi _api;
     std::string _indexHtml;
-    hv::HttpService _service;
-    hv::WebSocketService _websocket;
-    hv::WebSocketServer _server{&_websocket};
+    HttpService _httpService;
+    WebSocketService _wsService;
+    WebSocketServer _wsServer{&_wsService};
 };
 
 } // namespace neubau::webapp

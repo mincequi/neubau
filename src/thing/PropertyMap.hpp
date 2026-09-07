@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/PropertyKey.hpp"
+#include "thing/PropertyKey.hpp"
 
 #include <cstddef>
 #include <optional>

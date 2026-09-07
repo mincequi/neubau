@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/ThingRepository.hpp"
+#include "thing/ThingRepository.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyThingFactory.hpp"
 #include "sunspec/SunspecThingFactory.hpp"

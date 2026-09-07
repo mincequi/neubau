@@ -1,6 +1,6 @@
 #include "common/Persistence.hpp"
-#include "common/Thing.hpp"
-#include "common/ThingRepository.hpp"
+#include "thing/Thing.hpp"
+#include "thing/ThingRepository.hpp"
 #include "webapp/ThingJson.hpp"
 
 #include <hv/http_content.h>

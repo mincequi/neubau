@@ -8,6 +8,7 @@ add_library(
     Reactor.cpp
     Subnet.cpp
     Timer.cpp
+    WebSocketClientRepository.h WebSocketClientRepository.cpp
 )
 add_library(neubau::common ALIAS neubau_common)
 
@@ -19,9 +20,8 @@ target_include_directories(
 target_link_libraries(
     neubau_common
     PUBLIC
+        neubau_thing
         ${NEUBAU_LIBHV_TARGET}
-        reflectcpp::reflectcpp
-        RPP::rpp
         tomlplusplus::tomlplusplus
 )
 target_compile_features(neubau_common PUBLIC cxx_std_20)

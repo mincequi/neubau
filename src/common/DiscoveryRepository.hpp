@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common/ThingDiscovery.hpp"
-#include "common/Thing.hpp"
-#include "common/ThingRepository.hpp"
+#include "thing/ThingDiscovery.hpp"
+#include "thing/Thing.hpp"
+#include "thing/ThingRepository.hpp"
 
 #include <concepts>
 #include <exception>

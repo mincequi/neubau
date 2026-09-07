@@ -30,33 +30,6 @@ std::string lowercase(std::string_view value) {
     return result;
 }
 
-std::string txtValue(
-    const mdns::MdnsService& service,
-    std::string_view key) {
-    const auto normalizedKey = lowercase(key);
-    for (const auto& [candidate, value] : service.txt) {
-        if (lowercase(candidate) == normalizedKey) {
-            return value;
-        }
-    }
-    return {};
-}
-
-bool isGoECharger(const mdns::MdnsService& service) {
-    if (lowercase(service.serviceType) != httpServiceType) {
-        return false;
-    }
-
-    const auto manufacturer = lowercase(txtValue(service, "manufacturer"));
-    const auto deviceFamily = lowercase(txtValue(service, "devicefamily"));
-    if (manufacturer == "go-e" && deviceFamily == "goecharger") {
-        return true;
-    }
-
-    return lowercase(service.instanceName).starts_with("go-echarger")
-        || lowercase(service.hostname).starts_with("go-echarger");
-}
-
 std::string endpoint(const mdns::MdnsService& service) {
     const auto& host = service.addresses.empty()
         ? service.hostname
@@ -69,12 +42,6 @@ void logService(const mdns::MdnsService& service) {
         PLOGI << "Shelly discovered: " << service.instanceName
               << " at " << endpoint(service);
         return;
-    }
-    if (isGoECharger(service)) {
-        PLOGI << "go-eCharger discovered: "
-              << txtValue(service, "serial")
-              << " (" << txtValue(service, "devicetype") << ") at "
-              << endpoint(service);
     }
 }
 
@@ -90,18 +57,20 @@ void logError(std::string_view context, std::exception_ptr error) {
 
 DiscoveryServices::DiscoveryServices(common::ThingRepository& things)
     : _things{things}
-    , _thingFactories{things, _mdnsDiscovery} {}
-
-void DiscoveryServices::start() {
-    startLogging();
+    , _thingFactories{things, _mdnsDiscovery} {
+    startMdns();
     startShelly();
     startSunspec();
+}
+
+DiscoveryServices::~DiscoveryServices() {
+    stop();
 }
 
 void DiscoveryServices::stop() {
     stopSunspecChain();
     _shellySubscription.dispose();
-    _loggingSubscription.dispose();
+    _mdnsSubscription.dispose();
     _mdnsDiscovery.stop();
 }
 
@@ -111,8 +80,8 @@ void DiscoveryServices::discover() {
     startSunspec();
 }
 
-void DiscoveryServices::startLogging() {
-    _loggingSubscription = _mdnsDiscovery.services().subscribe(
+void DiscoveryServices::startMdns() {
+    _mdnsSubscription = _mdnsDiscovery.services().subscribe(
         logService,
         [](std::exception_ptr error) {
             logError("Service discovery", error);
@@ -131,6 +100,18 @@ void DiscoveryServices::startShelly() {
 }
 
 void DiscoveryServices::startSunspec() {
+    const auto loop = common::Reactor::loop();
+    if (loop->isRunning() && !loop->isInLoopThread()) {
+        // mDNS's UDP listener may already be driving the shared Reactor
+        // loop on its own background thread by the time we get here (its
+        // UdpServer starts an EventLoopThread as soon as it's started).
+        // SunspecDiscovery/ModbusDiscovery/PortScanner require being
+        // constructed and started on the loop thread, so marshal this
+        // whole call over instead of touching them from here.
+        loop->queueInLoop([this] { startSunspec(); });
+        return;
+    }
+
     const auto subnet = common::Subnet::primaryLocal(24);
     if (!subnet) {
         PLOGI << "SunSpec discovery skipped: no primary IPv4 CIDR";

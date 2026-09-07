@@ -25,6 +25,7 @@ include("${cmrc_SOURCE_DIR}/CMakeRC.cmake")
 include(CTest)
 
 add_subdirectory(src)
+add_subdirectory(tools)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

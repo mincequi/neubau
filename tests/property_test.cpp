@@ -1,5 +1,5 @@
-#include "common/PropertyKey.hpp"
-#include "common/PropertyMap.hpp"
+#include "thing/PropertyKey.hpp"
+#include "thing/PropertyMap.hpp"
 
 #include <cassert>
 #include <concepts>

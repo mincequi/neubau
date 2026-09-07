@@ -1,8 +1,8 @@
 #include "common/Persistence.hpp"
-#include "common/PropertyKey.hpp"
+#include "thing/PropertyKey.hpp"
 #include "common/Reactor.hpp"
-#include "common/Thing.hpp"
-#include "common/ThingRepository.hpp"
+#include "thing/Thing.hpp"
+#include "thing/ThingRepository.hpp"
 #include "webapp/ThingApi.hpp"
 #include "webapp/WebAppService.hpp"
 
@@ -24,8 +24,6 @@
 #include <type_traits>
 #include <utility>
 
-static_assert(neubau::webapp::serverPort == 8030);
-static_assert(neubau::webapp::webSocketPath == "/ws");
 static_assert(std::is_constructible_v<
               neubau::webapp::WebAppService,
               neubau::common::ThingRepository&>);

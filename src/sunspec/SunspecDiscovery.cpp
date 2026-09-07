@@ -406,10 +406,6 @@ void SunspecDiscovery::start() {
         throw std::logic_error(
             "SunSpec discovery must start on the Reactor loop");
     }
-    if (!loop->isRunning() && common::Reactor::hasRun()) {
-        throw std::logic_error(
-            "SunSpec discovery cannot start after the Reactor stops");
-    }
     state->started = true;
     state->run = std::make_shared<Run>(state);
     state->run->start();
