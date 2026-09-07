@@ -23,7 +23,8 @@ PollingService::PollingService(Timer& timer, ThingRepository& things)
 void PollingService::onTick(TimePoint now) {
     const auto epochNow =
         std::chrono::duration_cast<Seconds>(now.time_since_epoch());
-    for (const auto& thing : _currentThings) {
+    const auto currentThings = _currentThings;
+    for (const auto& thing : currentThings) {
         thing->poll(epochNow);
     }
 }
