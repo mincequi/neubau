@@ -1,6 +1,5 @@
 #pragma once
 
-#include "common/DiscoveryRepository.hpp"
 #include "common/ThingRepository.hpp"
 #include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyThingFactory.hpp"
@@ -13,16 +12,20 @@
 
 namespace neubau {
 
-// Owns every domain ThingFactory and wires a discovery's raw candidates
-// into the ThingRepository through the matching factory. Adding support
-// for a new discovery's candidate type only requires a new factory
-// member and a corresponding wireX() method here.
+// Owns every domain ThingFactory and wires each factory's Flow of
+// ready-made Things into the ThingRepository. Adding support for a new
+// discovery only requires a new factory member (or a locally
+// constructed one, for factories with no persistent state) and a
+// corresponding wireX() method here.
 class ThingFactories {
 public:
-    explicit ThingFactories(common::ThingRepository& things);
+    // `mdns` must outlive this object; it is injected into the Shelly
+    // factory, which registers its service-type interests with it.
+    explicit ThingFactories(
+        common::ThingRepository& things,
+        mdns::MdnsDiscovery& mdns);
 
     [[nodiscard]] rpp::composite_disposable_wrapper wireShelly(
-        common::ThingDiscovery<mdns::MdnsService>& discovery,
         std::function<void(std::exception_ptr)> onError,
         std::function<void()> onCompleted);
 
@@ -34,7 +37,6 @@ public:
 private:
     common::ThingRepository& _things;
     shelly::ShellyThingFactory _shellyFactory;
-    sunspec::SunspecThingFactory _sunspecFactory;
 };
 
 } // namespace neubau

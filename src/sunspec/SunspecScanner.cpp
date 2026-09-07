@@ -225,11 +225,13 @@ public:
         SunspecScanner::SessionFactory subscriptionSessionFactory,
         SunspecScanner::SessionFactory replacementSessionFactory,
         SunspecDiscoveryOptions options,
+        std::optional<std::uint8_t> fixedUnitId,
         CancelBinder bindCancellation,
         Observer observer)
         : _subscriptionSessionFactory{std::move(subscriptionSessionFactory)}
         , _replacementSessionFactory{std::move(replacementSessionFactory)}
         , _options{std::move(options)}
+        , _fixedUnitId{fixedUnitId}
         , _bindCancellation{std::move(bindCancellation)} {
         auto sharedObserver =
             std::make_shared<std::decay_t<Observer>>(std::move(observer));
@@ -277,12 +279,16 @@ private:
         if (_finished) {
             return;
         }
-        if (_unitIndex == unitIds.size()) {
+        // Fixed-unit-id mode always completes after its single probe via
+        // onProbeResponse()/onProbeFailure() before probeNextUnit() could be
+        // reached again, so this only needs to guard the unit-sweep case.
+        if (!_fixedUnitId.has_value() && _unitIndex == unitIds.size()) {
             complete();
             return;
         }
 
-        const auto unitId = unitIds[_unitIndex];
+        const auto unitId =
+            _fixedUnitId.has_value() ? *_fixedUnitId : unitIds[_unitIndex];
         const auto weak = weak_from_this();
         static_cast<void>(
             _session->readHoldingRegisters(unitId, 40000, 4).collect(
@@ -307,6 +313,10 @@ private:
         }
 
         if (!isSunspecHeader(registers)) {
+            if (_fixedUnitId.has_value()) {
+                complete();
+                return;
+            }
             if (_session->isClosed()) {
                 if (!replaceClosedSession()) {
                     return;
@@ -332,6 +342,10 @@ private:
 
     void onProbeFailure() {
         if (_finished) {
+            return;
+        }
+        if (_fixedUnitId.has_value()) {
+            complete();
             return;
         }
         if (_session->isClosed()) {
@@ -633,6 +647,7 @@ private:
     SunspecScanner::SessionFactory _subscriptionSessionFactory;
     SunspecScanner::SessionFactory _replacementSessionFactory;
     SunspecDiscoveryOptions _options;
+    std::optional<std::uint8_t> _fixedUnitId;
     CancelBinder _bindCancellation;
     std::function<void(SunspecThing)> _nextObserver;
     std::function<void()> _completeObserver;
@@ -688,6 +703,17 @@ SunspecScanner::SunspecScanner(
 
 SunspecScanner::SunspecScanner(
     std::shared_ptr<modbus::ModbusSession> session,
+    std::uint8_t unitId,
+    SunspecDiscoveryOptions options)
+    : SunspecScanner(
+          std::move(session),
+          SessionFactory{},
+          std::move(options)) {
+    _fixedUnitId = unitId;
+}
+
+SunspecScanner::SunspecScanner(
+    std::shared_ptr<modbus::ModbusSession> session,
     SessionFactory replacementSessionFactory)
     : SunspecScanner(
           std::move(session),
@@ -716,11 +742,24 @@ SunspecScanner::SunspecScanner(
     _subscriptionSessionFactory = [provider] { return provider->acquire(); };
 }
 
+SunspecScanner::SunspecScanner(
+    std::shared_ptr<modbus::ModbusSession> session,
+    SessionFactory replacementSessionFactory,
+    std::uint8_t unitId,
+    SunspecDiscoveryOptions options)
+    : SunspecScanner(
+          std::move(session),
+          std::move(replacementSessionFactory),
+          std::move(options)) {
+    _fixedUnitId = unitId;
+}
+
 common::Flow<SunspecThing> SunspecScanner::scan() const {
     auto observable = rpp::source::create<SunspecThing>(
         [subscriptionSessionFactory = _subscriptionSessionFactory,
          replacementSessionFactory = _replacementSessionFactory,
-         options = _options](
+         options = _options,
+         fixedUnitId = _fixedUnitId](
             auto&& observer) {
             auto control = std::make_shared<SunspecScanControl>();
             auto bindCancellation =
@@ -731,6 +770,7 @@ common::Flow<SunspecThing> SunspecScanner::scan() const {
                 std::move(subscriptionSessionFactory),
                 std::move(replacementSessionFactory),
                 std::move(options),
+                std::move(fixedUnitId),
                 std::move(bindCancellation),
                 std::move(observer));
             state->start();
@@ -749,6 +789,7 @@ common::Flow<SunspecThing> SunspecScanner::scan(
         [subscriptionSessionFactory = _subscriptionSessionFactory,
          replacementSessionFactory = _replacementSessionFactory,
          options = _options,
+         fixedUnitId = _fixedUnitId,
          control = std::move(control)](
             auto&& observer) {
             auto bindCancellation =
@@ -759,6 +800,7 @@ common::Flow<SunspecThing> SunspecScanner::scan(
                 std::move(subscriptionSessionFactory),
                 std::move(replacementSessionFactory),
                 std::move(options),
+                std::move(fixedUnitId),
                 std::move(bindCancellation),
                 std::move(observer));
             state->start();

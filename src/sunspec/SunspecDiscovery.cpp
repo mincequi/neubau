@@ -1,8 +1,6 @@
 #include "sunspec/SunspecDiscovery.hpp"
 
-#include "common/PortScanner.hpp"
 #include "common/Reactor.hpp"
-#include "modbus/ModbusDiscovery.hpp"
 #include "sunspec/SunspecIdentity.hpp"
 #include "sunspec/SunspecScanner.hpp"
 
@@ -15,7 +13,6 @@
 #include <exception>
 #include <memory>
 #include <optional>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -25,35 +22,9 @@ namespace neubau::sunspec {
 namespace {
 
 void validateOptions(const SunspecDiscoveryOptions& options) {
-    if (options.modbus.cidrs.empty()) {
-        throw std::invalid_argument(
-            "SunSpec discovery requires at least one IPv4 CIDR");
-    }
-    if (options.modbus.port == 0 || options.modbus.maxHosts == 0
-        || options.modbus.maxConcurrency == 0
-        || options.modbus.connectTimeout <= std::chrono::milliseconds::zero()
-        || options.modbus.responseTimeout
-            <= std::chrono::milliseconds::zero()
-        || options.maxModels == 0 || options.maxRegisterSpan < 4) {
+    if (options.maxModels == 0 || options.maxRegisterSpan < 4) {
         throw std::invalid_argument("SunSpec discovery options are invalid");
     }
-}
-
-std::vector<std::string> configuredAddresses(
-    const SunspecDiscoveryOptions& options) {
-    std::set<std::string> addresses;
-    for (const auto& cidr : options.modbus.cidrs) {
-        for (auto address : modbus::ModbusDiscovery::addressesInCidr(
-                 cidr,
-                 options.modbus.maxHosts)) {
-            addresses.insert(std::move(address));
-        }
-        if (addresses.size() > options.modbus.maxHosts) {
-            throw std::invalid_argument(
-                "configured IPv4 CIDRs exceed the host limit");
-        }
-    }
-    return {addresses.begin(), addresses.end()};
 }
 
 } // namespace
@@ -61,16 +32,13 @@ std::vector<std::string> configuredAddresses(
 struct SunspecDiscovery::State {
     State(
         SunspecDiscoveryOptions discoveryOptions,
-        std::vector<std::string> discoveryAddresses,
-        PortScannerFactory discoveryPortScannerFactory)
+        common::ThingDiscovery<modbus::ModbusThing>& discoveryModbus)
         : options{std::move(discoveryOptions)}
-        , addresses{std::move(discoveryAddresses)}
-        , portScannerFactory{std::move(discoveryPortScannerFactory)}
+        , modbusDiscovery{&discoveryModbus}
         , candidates{subject.get_observable().as_dynamic()} {}
 
     SunspecDiscoveryOptions options;
-    std::vector<std::string> addresses;
-    PortScannerFactory portScannerFactory;
+    common::ThingDiscovery<modbus::ModbusThing>* modbusDiscovery;
     rpp::subjects::publish_subject<SunspecThing> subject;
     common::Flow<SunspecThing> candidates;
     std::shared_ptr<Run> run;
@@ -139,25 +107,12 @@ private:
         }
 
         try {
-            _portScanner = state->portScannerFactory(
-                common::PortScannerOptions{
-                    .addresses = state->addresses,
-                    .ports = {state->options.modbus.port},
-                    .connectTimeout =
-                        state->options.modbus.connectTimeout,
-                    .maxConcurrency =
-                        state->options.modbus.maxConcurrency,
-                });
-            if (!_portScanner) {
-                throw std::logic_error(
-                    "SunSpec port scanner factory returned null");
-            }
             const auto weak = weak_from_this();
-            _portSubscription.emplace(
-                _portScanner->candidates().subscribe(
-                    [weak](const common::OpenPort& endpoint) {
+            _modbusSubscription.emplace(
+                state->modbusDiscovery->candidates().subscribe(
+                    [weak](const modbus::ModbusThing& candidate) {
                         if (const auto self = weak.lock()) {
-                            self->openEndpoint(endpoint);
+                            self->openEndpoint(candidate);
                         }
                     },
                     [weak](std::exception_ptr error) {
@@ -167,10 +122,10 @@ private:
                     },
                     [weak] {
                         if (const auto self = weak.lock()) {
-                            self->portsCompleted();
+                            self->upstreamCompleted();
                         }
                     }));
-            _portScanner->start();
+            state->modbusDiscovery->start();
         } catch (...) {
             fail(std::current_exception());
         }
@@ -182,15 +137,20 @@ private:
         if (!state || _stopping || _failing || state->terminal) {
             return nullptr;
         }
+        // SunspecDiscoveryOptions no longer carries its own connect/response
+        // timeouts (the endpoint was already confirmed live by the injected
+        // Modbus discovery); these literals intentionally match
+        // modbus::ModbusDiscoveryOptions's own connectTimeout/responseTimeout
+        // defaults so probing behaves consistently with the upstream scan.
         auto session = std::make_shared<modbus::ModbusSession>(
             endpoint->endpoint,
-            state->options.modbus.connectTimeout,
-            state->options.modbus.responseTimeout);
+            std::chrono::milliseconds{250},
+            std::chrono::milliseconds{500});
         endpoint->sessions.push_back(session);
         return session;
     }
 
-    void openEndpoint(const common::OpenPort& openPort) {
+    void openEndpoint(const modbus::ModbusThing& candidate) {
         const auto state = _state.lock();
         if (!state || _stopping || _failing || state->terminal) {
             return;
@@ -199,8 +159,8 @@ private:
         try {
             auto endpoint = std::make_shared<EndpointScan>();
             endpoint->endpoint = {
-                .address = openPort.address,
-                .port = openPort.port,
+                .address = candidate.address,
+                .port = candidate.port,
             };
             const auto session = createSession(endpoint);
             if (!session) {
@@ -217,6 +177,7 @@ private:
                         ? self->createSession(endpoint)
                         : std::shared_ptr<modbus::ModbusSession>{};
                 },
+                candidate.unitId,
                 state->options);
             endpoint->control = std::make_shared<SunspecScanControl>();
             _endpoints.push_back(endpoint);
@@ -296,8 +257,8 @@ private:
         }
     }
 
-    void portsCompleted() {
-        _portsCompleted = true;
+    void upstreamCompleted() {
+        _modbusCompleted = true;
         maybeComplete();
     }
 
@@ -327,16 +288,12 @@ private:
         }
         _stopping = true;
         cancelAndCloseEndpoints();
-        if (const auto portScanner = _portScanner) {
-            portScanner->stop();
-        } else {
-            complete();
-        }
+        state->modbusDiscovery->stop();
     }
 
     void maybeComplete() {
         const auto state = _state.lock();
-        if (!state || _failing || state->terminal || !_portsCompleted) {
+        if (!state || _failing || state->terminal || !_modbusCompleted) {
             return;
         }
         for (const auto& endpoint : _endpoints) {
@@ -368,17 +325,14 @@ private:
         _failing = true;
         _stopping = true;
         cancelAndCloseEndpoints();
-        if (const auto portScanner = _portScanner) {
-            portScanner->stop();
-        }
+        state->modbusDiscovery->stop();
         state->terminal = true;
         state->subject.get_observer().on_error(std::move(error));
         releaseResources();
     }
 
     void releaseResources() {
-        _portSubscription.reset();
-        _portScanner.reset();
+        _modbusSubscription.reset();
         for (const auto& endpoint : _endpoints) {
             endpoint->subscription.reset();
             endpoint->control.reset();
@@ -388,10 +342,9 @@ private:
     }
 
     std::weak_ptr<State> _state;
-    std::shared_ptr<common::ThingDiscovery<common::OpenPort>> _portScanner;
-    std::optional<rpp::composite_disposable_wrapper> _portSubscription;
+    std::optional<rpp::composite_disposable_wrapper> _modbusSubscription;
     std::vector<std::shared_ptr<EndpointScan>> _endpoints;
-    bool _portsCompleted{};
+    bool _modbusCompleted{};
     bool _stopping{};
     bool _failing{};
 };
@@ -454,27 +407,11 @@ std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing) {
     return stream;
 }
 
-SunspecDiscovery::SunspecDiscovery(SunspecDiscoveryOptions options)
-    : SunspecDiscovery(
-          std::move(options),
-          [](common::PortScannerOptions portScannerOptions) {
-              return std::make_shared<common::PortScanner>(
-                  std::move(portScannerOptions));
-          }) {}
-
 SunspecDiscovery::SunspecDiscovery(
     SunspecDiscoveryOptions options,
-    PortScannerFactory portScannerFactory) {
+    common::ThingDiscovery<modbus::ModbusThing>& modbusDiscovery) {
     validateOptions(options);
-    auto addresses = configuredAddresses(options);
-    if (!portScannerFactory) {
-        throw std::invalid_argument(
-            "SunSpec discovery requires a port scanner factory");
-    }
-    _state = std::make_shared<State>(
-        std::move(options),
-        std::move(addresses),
-        std::move(portScannerFactory));
+    _state = std::make_shared<State>(std::move(options), modbusDiscovery);
 }
 
 SunspecDiscovery::~SunspecDiscovery() noexcept {

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace neubau::sunspec {
@@ -40,11 +41,20 @@ public:
         SunspecDiscoveryOptions options);
     SunspecScanner(
         std::shared_ptr<modbus::ModbusSession> session,
+        std::uint8_t unitId,
+        SunspecDiscoveryOptions options = SunspecDiscoveryOptions{});
+    SunspecScanner(
+        std::shared_ptr<modbus::ModbusSession> session,
         SessionFactory replacementSessionFactory);
     SunspecScanner(
         std::shared_ptr<modbus::ModbusSession> session,
         SessionFactory replacementSessionFactory,
         SunspecDiscoveryOptions options);
+    SunspecScanner(
+        std::shared_ptr<modbus::ModbusSession> session,
+        SessionFactory replacementSessionFactory,
+        std::uint8_t unitId,
+        SunspecDiscoveryOptions options = SunspecDiscoveryOptions{});
 
     // Every subscription owns an exclusive session. Supply one newly-created
     // control for each controlled scan subscription.
@@ -57,6 +67,7 @@ private:
     SessionFactory _subscriptionSessionFactory;
     SessionFactory _replacementSessionFactory;
     SunspecDiscoveryOptions _options;
+    std::optional<std::uint8_t> _fixedUnitId;
 };
 
 } // namespace neubau::sunspec

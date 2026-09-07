@@ -144,7 +144,7 @@ public:
 
     void start() {
         assertSequence();
-        exceptionAtUnitOneAdvancesToUnit240();
+        fixedUnitIdDoesNotSweepAfterFailure();
     }
 
 private:
@@ -284,6 +284,42 @@ private:
 
     void exceptionAtUnitOneAdvancesToUnit240() {
         runFailureCase(Failure::exception, 0, &SunspecScannerSuite::timeoutAtUnitOneAdvancesToUnit240);
+    }
+
+    void fixedUnitIdDoesNotSweepAfterFailure() {
+        auto fake = std::make_shared<ModbusFakeServer>(
+            std::vector<ModbusScriptStep>{
+                ReplyHoldingRegisters{{0x5375, 0x6e54, 1, 65}},
+            });
+        fake->start();
+        auto session = std::make_shared<ModbusSession>(
+            ModbusEndpoint{"127.0.0.1", fake->port()},
+            100ms,
+            10ms);
+        _servers.push_back(fake);
+        _sessions.push_back(session);
+        auto scanner = std::make_shared<SunspecScanner>(
+            session,
+            static_cast<std::uint8_t>(7),
+            neubau::sunspec::SunspecDiscoveryOptions{});
+
+        auto candidates = std::make_shared<std::size_t>();
+        auto completions = std::make_shared<std::size_t>();
+        scanner->scan().collect(
+            [self = shared_from_this(), candidates](neubau::sunspec::SunspecThing) {
+                self->assertReactorThread();
+                ++*candidates;
+            },
+            [](std::exception_ptr) { assert(false); },
+            [self = shared_from_this(), fake, candidates, completions] {
+                self->assertReactorThread();
+                ++*completions;
+                assert(*candidates == 0);
+                assert(*completions == 1);
+                assert(fake->requests().size() == 1);
+                assertRequest(fake->requests()[0], 7);
+                self->exceptionAtUnitOneAdvancesToUnit240();
+            });
     }
 
     void timeoutAtUnitOneAdvancesToUnit240() {

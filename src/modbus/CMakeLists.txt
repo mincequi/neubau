@@ -2,6 +2,7 @@ add_library(
     neubau_modbus
     ModbusDiscovery.cpp
     ModbusSession.cpp
+    ModbusThing.cpp
 )
 add_library(neubau::modbus ALIAS neubau_modbus)
 

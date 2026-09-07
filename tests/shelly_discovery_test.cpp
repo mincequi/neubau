@@ -1,4 +1,4 @@
-#include "shelly/ShellyDiscovery.hpp"
+#include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyThing.hpp"
 #include "shelly/ShellyThingFactory.hpp"
 
@@ -22,7 +22,7 @@ int main() {
         },
     };
 
-    assert(neubau::shelly::ShellyDiscovery::isShellyService(service));
+    assert(neubau::shelly::ShellyThingFactory::isShellyService(service));
 
     const neubau::shelly::ShellyThing thing{service};
     assert(thing.id() == "shellyplus1pm-aabbcc");
@@ -45,15 +45,14 @@ int main() {
     assert(output.str().find("192.168.1.10:80") != std::string::npos);
 
     service.serviceType = "_http._tcp.local.";
-    assert(neubau::shelly::ShellyDiscovery::isShellyService(service));
+    assert(neubau::shelly::ShellyThingFactory::isShellyService(service));
 
     service.instanceName = "printer._http._tcp.local.";
     service.hostname = "printer.local.";
     service.txt.clear();
-    assert(!neubau::shelly::ShellyDiscovery::isShellyService(service));
+    assert(!neubau::shelly::ShellyThingFactory::isShellyService(service));
 
-    const neubau::shelly::ShellyThingFactory factory;
-    const auto factoryThing = factory.create(fallbackService);
-    assert(factoryThing->id() == "shellyplus1pm-aabbcc");
-    assert(factoryThing->model() == "Plus1PM");
+    neubau::mdns::MdnsDiscovery mdns;
+    const neubau::shelly::ShellyThingFactory factory{mdns};
+    (void)factory.things();
 }

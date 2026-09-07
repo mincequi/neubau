@@ -4,17 +4,18 @@
 
 namespace neubau {
 
-ThingFactories::ThingFactories(common::ThingRepository& things)
-    : _things{things} {}
+ThingFactories::ThingFactories(
+    common::ThingRepository& things, mdns::MdnsDiscovery& mdns)
+    : _things{things}
+    , _shellyFactory{mdns} {}
 
 rpp::composite_disposable_wrapper ThingFactories::wireShelly(
-    common::ThingDiscovery<mdns::MdnsService>& discovery,
     std::function<void(std::exception_ptr)> onError,
     std::function<void()> onCompleted) {
-    return common::addCandidatesToRepository(
-        discovery,
-        _shellyFactory,
-        _things,
+    return _shellyFactory.things().subscribe(
+        [this](std::shared_ptr<shelly::ShellyThing> thing) {
+            _things.add(std::move(thing));
+        },
         std::move(onError),
         std::move(onCompleted));
 }
@@ -23,10 +24,11 @@ rpp::composite_disposable_wrapper ThingFactories::wireSunspec(
     common::ThingDiscovery<sunspec::SunspecThing>& discovery,
     std::function<void(std::exception_ptr)> onError,
     std::function<void()> onCompleted) {
-    return common::addCandidatesToRepository(
-        discovery,
-        _sunspecFactory,
-        _things,
+    sunspec::SunspecThingFactory factory{discovery};
+    return factory.things().subscribe(
+        [this](std::shared_ptr<sunspec::SunspecThing> thing) {
+            _things.add(std::move(thing));
+        },
         std::move(onError),
         std::move(onCompleted));
 }

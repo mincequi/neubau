@@ -1,8 +1,11 @@
 add_library(
     neubau_common
+    ConfigRepository.cpp
     Persistence.cpp
     PortScanner.cpp
+    PortScannerSession.cpp
     Reactor.cpp
+    Subnet.cpp
     Timer.cpp
 )
 add_library(neubau::common ALIAS neubau_common)

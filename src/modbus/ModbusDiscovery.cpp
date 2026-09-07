@@ -2,39 +2,24 @@
 
 #include "common/Reactor.hpp"
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#endif
-
 #include <hv/TcpClient.h>
 #include <rpp/subjects/publish_subject.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
-#include <limits>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <ostream>
-#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -267,14 +252,16 @@ class Identifier : public std::enable_shared_from_this<Identifier> {
 public:
     Identifier(
         std::string address,
+        std::uint16_t port,
         ModbusDiscoveryOptions options,
         std::uint8_t unitId,
         IdentifyResult result)
         : _address{std::move(address)}
+        , _port{port}
         , _options{std::move(options)}
         , _unitId{unitId}
         , _result{std::move(result)}
-        , _thing{_address, _options.port, _unitId} {}
+        , _thing{_address, _port, _unitId} {}
 
     void start() { requestMei(); }
 
@@ -288,12 +275,11 @@ public:
 
 private:
     void requestMei() {
-        const auto request =
-            deviceIdRequest(_transactionId, _unitId, _objectId);
+        const auto request = deviceIdRequest(_transactionId, _unitId, _objectId);
         auto self = shared_from_this();
         _exchange = std::make_shared<TcpExchange>(
             _address,
-            _options.port,
+            _port,
             _options.connectTimeout,
             _options.responseTimeout,
             [self](std::optional<Response> response, std::exception_ptr error) {
@@ -374,12 +360,11 @@ private:
 
     void requestFallback() {
         constexpr std::uint16_t transactionId{1};
-        const auto request =
-            holdingRegisterRequest(transactionId, _unitId, 0, 1);
+        const auto request = holdingRegisterRequest(transactionId, _unitId, 0, 1);
         auto self = shared_from_this();
         _exchange = std::make_shared<TcpExchange>(
             _address,
-            _options.port,
+            _port,
             _options.connectTimeout,
             _options.responseTimeout,
             [self](std::optional<Response> response, std::exception_ptr error) {
@@ -428,6 +413,7 @@ private:
     }
 
     std::string _address;
+    std::uint16_t _port;
     ModbusDiscoveryOptions _options;
     std::uint8_t _unitId;
     IdentifyResult _result;
@@ -439,62 +425,14 @@ private:
     bool _finished{};
 };
 
-std::uint32_t parseIpv4(const std::string& address) {
-    in_addr parsed{};
-    if (inet_pton(AF_INET, address.c_str(), &parsed) != 1) {
-        throw std::invalid_argument("invalid IPv4 CIDR address: " + address);
-    }
-    return ntohl(parsed.s_addr);
-}
-
-std::string formatIpv4(std::uint32_t address) {
-    in_addr value{.s_addr = htonl(address)};
-    std::array<char, INET_ADDRSTRLEN> output{};
-    if (inet_ntop(AF_INET, &value, output.data(), output.size()) == nullptr) {
-        throw std::runtime_error("failed to format IPv4 address");
-    }
-    return output.data();
-}
-
-std::optional<std::uint32_t> primaryIpv4Address() {
-#ifdef _WIN32
-    return std::nullopt;
-#else
-    ifaddrs* interfaces{};
-    if (getifaddrs(&interfaces) != 0) {
-        return std::nullopt;
-    }
-    std::optional<std::uint32_t> result;
-    for (auto* entry = interfaces; entry != nullptr; entry = entry->ifa_next) {
-        if (entry->ifa_addr == nullptr
-            || entry->ifa_addr->sa_family != AF_INET
-            || (entry->ifa_flags & IFF_LOOPBACK) != 0
-            || (entry->ifa_flags & IFF_UP) == 0) {
-            continue;
-        }
-        const auto* address =
-            reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
-        result = ntohl(address->sin_addr.s_addr);
-        break;
-    }
-    freeifaddrs(interfaces);
-    return result;
-#endif
-}
-
 void validateOptions(const ModbusDiscoveryOptions& options) {
-    if (options.cidrs.empty()) {
-        throw std::invalid_argument(
-            "Modbus discovery requires at least one IPv4 CIDR");
-    }
     if (options.unitIds.empty()) {
         throw std::invalid_argument(
             "Modbus discovery requires at least one unit ID");
     }
-    if (options.port == 0 || options.maxConcurrency == 0
-        || options.maxHosts == 0) {
+    if (options.maxConcurrency == 0) {
         throw std::invalid_argument(
-            "Modbus discovery limits and port must be non-zero");
+            "Modbus discovery concurrency must be non-zero");
     }
     if (options.connectTimeout <= std::chrono::milliseconds::zero()
         || options.responseTimeout <= std::chrono::milliseconds::zero()) {
@@ -515,47 +453,6 @@ struct ModbusDiscovery::State {
     rpp::subjects::publish_subject<ModbusThing> subject;
     common::Flow<ModbusThing> candidates;
 };
-
-std::string modbusThingId(
-    std::string_view address,
-    std::uint16_t port,
-    std::uint8_t unitId) {
-    return "modbus://" + std::string{address} + ':'
-        + std::to_string(port) + '/' + std::to_string(unitId);
-}
-
-ModbusThing::ModbusThing(
-    std::string address,
-    std::uint16_t port,
-    std::uint8_t unitId)
-    : Thing{modbusThingId(address, port, unitId)}
-    , address{std::move(address)}
-    , port{port}
-    , unitId{unitId} {}
-
-std::ostream& operator<<(std::ostream& stream, const ModbusThing& thing) {
-    stream << "Modbus " << thing.address << ':' << thing.port
-           << " unit " << static_cast<unsigned int>(thing.unitId) << '\n';
-    if (thing.hasDeviceIdentification) {
-        if (!thing.vendorName.empty()) {
-            stream << "  vendor: " << thing.vendorName << '\n';
-        }
-        if (!thing.productCode.empty()) {
-            stream << "  product: " << thing.productCode << '\n';
-        }
-        if (!thing.revision.empty()) {
-            stream << "  revision: " << thing.revision << '\n';
-        }
-    } else {
-        stream << "  device identification unavailable";
-        if (thing.exceptionCode) {
-            stream << " (Modbus exception "
-                   << static_cast<unsigned int>(*thing.exceptionCode) << ')';
-        }
-        stream << '\n';
-    }
-    return stream;
-}
 
 common::Flow<std::vector<std::uint16_t>> readHoldingRegisters(
     const ModbusThing& thing,
@@ -642,19 +539,13 @@ common::Flow<std::vector<std::uint16_t>> readHoldingRegisters(
         observable.as_dynamic()};
 }
 
-ModbusDiscovery::ModbusDiscovery(ModbusDiscoveryOptions options)
+ModbusDiscovery::ModbusDiscovery(
+    ModbusDiscoveryOptions options,
+    common::ThingDiscovery<common::OpenPort>& portScanner)
     : _state{std::make_shared<State>()}
-    , _options{std::move(options)} {
+    , _options{std::move(options)}
+    , _portScanner{portScanner} {
     validateOptions(_options);
-
-    std::set<std::string> uniqueAddresses;
-    for (const auto& cidr : _options.cidrs) {
-        const auto remaining = _options.maxHosts - uniqueAddresses.size();
-        for (auto& address : addressesInCidr(cidr, remaining)) {
-            uniqueAddresses.insert(std::move(address));
-        }
-    }
-    _addresses.assign(uniqueAddresses.begin(), uniqueAddresses.end());
 }
 
 ModbusDiscovery::~ModbusDiscovery() {
@@ -663,41 +554,49 @@ ModbusDiscovery::~ModbusDiscovery() {
 
 common::Flow<ModbusThing> ModbusDiscovery::scan() const {
     auto observable = rpp::source::create<ModbusThing>(
-        [state = _state, options = _options, addresses = _addresses](
-            auto&& observer) {
+        [state = _state, options = _options, portScanner = &_portScanner](auto&& observer) {
             using Observer = std::decay_t<decltype(observer)>;
-            auto sharedObserver =
-                std::make_shared<Observer>(std::move(observer));
+            auto sharedObserver = std::make_shared<Observer>(std::move(observer));
             if (state->running.exchange(true)) {
                 common::Reactor::loop()->queueInLoop([sharedObserver] {
                     sharedObserver->on_error(std::make_exception_ptr(
-                        std::logic_error(
-                            "Modbus discovery is already running")));
+                        std::logic_error("Modbus discovery is already running")));
                 });
                 return;
             }
+
             struct Session : std::enable_shared_from_this<Session> {
+                struct Job {
+                    std::string address;
+                    std::uint16_t port{};
+                    std::uint8_t unitId{};
+                };
+
                 Session(
                     std::shared_ptr<State> sessionState,
                     ModbusDiscoveryOptions sessionOptions,
-                    std::vector<std::string> sessionAddresses,
+                    common::ThingDiscovery<common::OpenPort>* sessionPortScanner,
                     std::shared_ptr<Observer> sessionObserver)
                     : state{std::move(sessionState)}
                     , options{std::move(sessionOptions)}
-                    , addresses{std::move(sessionAddresses)}
+                    , portScanner{sessionPortScanner}
                     , observer{std::move(sessionObserver)} {}
 
                 std::shared_ptr<State> state;
                 ModbusDiscoveryOptions options;
-                std::vector<std::string> addresses;
+                common::ThingDiscovery<common::OpenPort>* portScanner;
                 std::shared_ptr<Observer> observer;
+                std::optional<rpp::composite_disposable_wrapper> subscription;
                 std::vector<std::shared_ptr<Identifier>> active;
-                std::size_t nextJob{};
+                std::deque<Job> pending;
+                std::shared_ptr<Session> keepAlive;
+                bool upstreamCompleted{};
                 bool stopped{};
                 bool completed{};
 
                 void start() {
                     auto self = this->shared_from_this();
+                    keepAlive = self;
                     {
                         std::scoped_lock lock{state->mutex};
                         state->stopAction = [weak = std::weak_ptr{self}] {
@@ -707,33 +606,65 @@ common::Flow<ModbusThing> ModbusDiscovery::scan() const {
                             }
                         };
                     }
-                    common::Reactor::loop()->queueInLoop(
-                        [self] { self->fill(); });
+                    common::Reactor::loop()->queueInLoop([self] {
+                        if (self->stopped) {
+                            self->upstreamCompleted = true;
+                            self->finish();
+                            return;
+                        }
+                        const auto weak = std::weak_ptr<Session>{self};
+                        self->subscription.emplace(
+                            self->portScanner->candidates().subscribe(
+                                [weak](const common::OpenPort& candidate) {
+                                    if (const auto session = weak.lock()) {
+                                        session->enqueue(candidate);
+                                    }
+                                },
+                                [weak](std::exception_ptr error) {
+                                    if (const auto session = weak.lock()) {
+                                        session->fail(std::move(error));
+                                    }
+                                },
+                                [weak] {
+                                    if (const auto session = weak.lock()) {
+                                        session->onUpstreamCompleted();
+                                    }
+                                }));
+                        self->portScanner->start();
+                    });
+                }
+
+                void enqueue(const common::OpenPort& candidate) {
+                    if (stopped) {
+                        return;
+                    }
+                    for (const auto unitId : options.unitIds) {
+                        pending.push_back(Job{
+                            .address = candidate.address,
+                            .port = candidate.port,
+                            .unitId = unitId,
+                        });
+                    }
+                    fill();
                 }
 
                 void fill() {
-                    if (stopped) {
-                        finish();
+                    if (completed) {
                         return;
                     }
-                    const auto jobCount =
-                        addresses.size() * options.unitIds.size();
-                    while (active.size() < options.maxConcurrency
-                           && nextJob < jobCount) {
-                        const auto job = nextJob++;
-                        const auto address =
-                            addresses[job / options.unitIds.size()];
-                        const auto unitId =
-                            options.unitIds[job % options.unitIds.size()];
+                    while (!stopped && active.size() < options.maxConcurrency
+                           && !pending.empty()) {
+                        auto job = std::move(pending.front());
+                        pending.pop_front();
                         auto self = this->shared_from_this();
                         auto weakIdentifier =
                             std::make_shared<std::weak_ptr<Identifier>>();
                         auto identifier = std::make_shared<Identifier>(
-                            address,
+                            job.address,
+                            job.port,
                             options,
-                            unitId,
-                            [self, weakIdentifier](
-                                std::optional<ModbusThing> thing) {
+                            job.unitId,
+                            [self, weakIdentifier](std::optional<ModbusThing> thing) {
                                 self->oneFinished(
                                     weakIdentifier->lock(),
                                     std::move(thing));
@@ -742,9 +673,7 @@ common::Flow<ModbusThing> ModbusDiscovery::scan() const {
                         active.push_back(identifier);
                         identifier->start();
                     }
-                    if (active.empty() && nextJob >= jobCount) {
-                        finish();
-                    }
+                    maybeComplete();
                 }
 
                 void oneFinished(
@@ -755,10 +684,15 @@ common::Flow<ModbusThing> ModbusDiscovery::scan() const {
                         found != active.end()) {
                         active.erase(found);
                     }
-                    if (!stopped && thing) {
+                    if (!stopped && thing.has_value()) {
                         observer->on_next(std::move(*thing));
                     }
                     fill();
+                }
+
+                void onUpstreamCompleted() {
+                    upstreamCompleted = true;
+                    maybeComplete();
                 }
 
                 void stop() {
@@ -766,9 +700,21 @@ common::Flow<ModbusThing> ModbusDiscovery::scan() const {
                         return;
                     }
                     stopped = true;
+                    pending.clear();
                     auto operations = std::move(active);
                     for (const auto& operation : operations) {
                         operation->cancel();
+                    }
+                    portScanner->stop();
+                    if (operations.empty()) {
+                        maybeComplete();
+                    }
+                }
+
+                void maybeComplete() {
+                    if (completed || !upstreamCompleted || !pending.empty()
+                        || !active.empty()) {
+                        return;
                     }
                     finish();
                 }
@@ -778,19 +724,46 @@ common::Flow<ModbusThing> ModbusDiscovery::scan() const {
                         return;
                     }
                     completed = true;
+                    subscription.reset();
                     {
                         std::scoped_lock lock{state->mutex};
                         state->stopAction = nullptr;
                     }
                     state->running = false;
                     observer->on_completed();
+                    // Drop the self-reference last so it cannot destroy
+                    // `Session` while any of the cleanup above is still
+                    // executing, even if a caller relied solely on this
+                    // reference to keep it alive.
+                    keepAlive.reset();
+                }
+
+                void fail(std::exception_ptr error) {
+                    if (completed) {
+                        return;
+                    }
+                    completed = true;
+                    stopped = true;
+                    pending.clear();
+                    auto operations = std::move(active);
+                    for (const auto& operation : operations) {
+                        operation->cancel();
+                    }
+                    subscription.reset();
+                    {
+                        std::scoped_lock lock{state->mutex};
+                        state->stopAction = nullptr;
+                    }
+                    state->running = false;
+                    observer->on_error(std::move(error));
+                    keepAlive.reset();
                 }
             };
 
             auto session = std::make_shared<Session>(
                 state,
                 options,
-                addresses,
+                portScanner,
                 std::move(sharedObserver));
             session->start();
         });
@@ -814,75 +787,6 @@ void ModbusDiscovery::start() {
 const common::Flow<ModbusThing>& ModbusDiscovery::candidates()
     const noexcept {
     return _state->candidates;
-}
-
-std::vector<std::string> ModbusDiscovery::addressesInCidr(
-    const std::string& cidr,
-    std::size_t maxHosts) {
-    const auto separator = cidr.find('/');
-    const auto address = cidr.substr(0, separator);
-    const auto prefixText = separator == std::string::npos
-        ? std::string_view{"32"}
-        : std::string_view{cidr}.substr(separator + 1);
-
-    unsigned int prefix = 0;
-    const auto [end, error] = std::from_chars(
-        prefixText.data(),
-        prefixText.data() + prefixText.size(),
-        prefix);
-    if (error != std::errc{} || end != prefixText.data() + prefixText.size()
-        || prefix > 32) {
-        throw std::invalid_argument("invalid IPv4 CIDR prefix: " + cidr);
-    }
-
-    const auto ip = parseIpv4(address);
-    const auto mask = prefix == 0
-        ? 0U
-        : std::numeric_limits<std::uint32_t>::max() << (32U - prefix);
-    const auto network = ip & mask;
-    const auto addressCount = std::uint64_t{1} << (32U - prefix);
-    const auto skipNetworkAndBroadcast = prefix <= 30;
-    const auto hostCount = addressCount
-        - (skipNetworkAndBroadcast ? std::uint64_t{2} : std::uint64_t{0});
-    if (hostCount > maxHosts) {
-        throw std::invalid_argument(
-            "IPv4 CIDR exceeds the configured host limit: " + cidr);
-    }
-
-    const auto first =
-        network + (skipNetworkAndBroadcast ? std::uint32_t{1} : 0U);
-    std::vector<std::string> addresses;
-    addresses.reserve(static_cast<std::size_t>(hostCount));
-    for (std::uint64_t offset = 0; offset < hostCount; ++offset) {
-        addresses.push_back(
-            formatIpv4(first + static_cast<std::uint32_t>(offset)));
-    }
-    return addresses;
-}
-
-std::string ModbusDiscovery::cidrForAddress(
-    const std::string& address,
-    std::uint8_t prefix) {
-    if (prefix > 32) {
-        throw std::invalid_argument("invalid IPv4 prefix");
-    }
-    const auto ip = parseIpv4(address);
-    const auto mask = prefix == 0
-        ? 0U
-        : std::numeric_limits<std::uint32_t>::max() << (32U - prefix);
-    return formatIpv4(ip & mask) + '/' + std::to_string(prefix);
-}
-
-std::optional<std::string> ModbusDiscovery::primaryIpv4Cidr(
-    std::uint8_t prefix) {
-    if (prefix > 32) {
-        throw std::invalid_argument("invalid IPv4 prefix");
-    }
-    const auto address = primaryIpv4Address();
-    if (!address) {
-        return std::nullopt;
-    }
-    return cidrForAddress(formatIpv4(*address), prefix);
 }
 
 void ModbusDiscovery::stop() {

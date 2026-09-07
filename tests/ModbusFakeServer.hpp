@@ -111,6 +111,10 @@ public:
             if (channel->isConnected()) {
                 assert(common::Reactor::loop()->isInLoopThread());
                 ++_connectionCount;
+            } else {
+                _received.erase(channel->fd());
+                _nextStepByConnection.erase(channel->fd());
+                _scriptByConnection.erase(channel->fd());
             }
         };
         _server.onMessage =
@@ -142,6 +146,10 @@ public:
             if (channel->isConnected()) {
                 assert(common::Reactor::loop()->isInLoopThread());
                 ++_connectionCount;
+            } else {
+                _received.erase(channel->fd());
+                _nextStepByConnection.erase(channel->fd());
+                _scriptByConnection.erase(channel->fd());
             }
         };
         _server.onMessage =

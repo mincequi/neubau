@@ -124,15 +124,15 @@ std::vector<std::uint8_t> ptrQuery(std::string_view serviceType) {
 
 MdnsDiscovery::MdnsDiscovery()
     : _services{_subject.get_observable().as_dynamic()}
-    , _server{common::Reactor::loop()} {
-    if (_server.createsocket(0, "0.0.0.0") < 0) {
+    , _udpServer{common::Reactor::loop()} {
+    if (_udpServer.createsocket(0, "0.0.0.0") < 0) {
         throw std::runtime_error("failed to create the mDNS UDP server");
     }
-    _server.onMessage =
+    _udpServer.onMessage =
         [this](const hv::SocketChannelPtr& channel, hv::Buffer* buffer) {
-            handleDatagram(channel, buffer);
+            onDatagram(channel, buffer);
         };
-    _server.start();
+    _udpServer.start();
 }
 
 MdnsDiscovery::~MdnsDiscovery() {
@@ -152,7 +152,7 @@ void MdnsDiscovery::stop() noexcept {
         return;
     }
     _stopped = true;
-    _server.closesocket();
+    _udpServer.closesocket();
     _subject.get_observer().on_completed();
 }
 
@@ -164,7 +164,7 @@ void MdnsDiscovery::sendQuery(const std::string& serviceType) {
             multicastAddress.data(),
             multicastPort)
         != 0
-        || _server.sendto(
+        || _udpServer.sendto(
                query.data(),
                static_cast<int>(query.size()),
                &destination.sa)
@@ -174,7 +174,7 @@ void MdnsDiscovery::sendQuery(const std::string& serviceType) {
     }
 }
 
-void MdnsDiscovery::handleDatagram(
+void MdnsDiscovery::onDatagram(
     const hv::SocketChannelPtr& channel,
     hv::Buffer* buffer) {
     if (buffer->size() < 12) {

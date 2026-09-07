@@ -48,6 +48,11 @@ target_link_libraries(port_scanner_test PRIVATE neubau::common)
 
 add_test(NAME port_scanner_test COMMAND port_scanner_test)
 
+add_executable(subnet_test subnet_test.cpp)
+target_link_libraries(subnet_test PRIVATE neubau::common)
+
+add_test(NAME subnet_test COMMAND subnet_test)
+
 add_executable(timer_test timer_test.cpp)
 target_link_libraries(timer_test PRIVATE neubau::common)
 

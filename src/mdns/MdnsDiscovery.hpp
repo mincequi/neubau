@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/flow.hpp"
+#include "mdns/MdnsService.hpp"
 
 #include <hv/UdpServer.h>
 #include <rpp/subjects/publish_subject.hpp>
@@ -12,20 +13,6 @@
 #include <vector>
 
 namespace neubau::mdns {
-
-struct MdnsService {
-    std::string serviceType;
-    std::string instanceName;
-    std::string hostname;
-    std::uint16_t port{};
-    std::uint16_t priority{};
-    std::uint16_t weight{};
-    std::vector<std::string> addresses;
-    std::map<std::string, std::string> txt;
-    std::uint32_t ttl{};
-
-    bool operator==(const MdnsService&) const = default;
-};
 
 class MdnsDiscovery {
 public:
@@ -50,7 +37,7 @@ private:
     };
 
     void sendQuery(const std::string& serviceType);
-    void handleDatagram(
+    void onDatagram(
         const hv::SocketChannelPtr& channel,
         hv::Buffer* buffer);
     int handleRecord(
@@ -65,7 +52,7 @@ private:
 
     rpp::subjects::publish_subject<MdnsService> _subject;
     common::Flow<MdnsService> _services;
-    hv::UdpServerEventLoopTmpl<> _server;
+    hv::UdpServer _udpServer;
     std::map<std::string, PendingService> _discoveredServices;
     std::map<std::string, std::vector<std::string>> _addresses;
     std::map<std::string, MdnsService> _emitted;

@@ -17,7 +17,10 @@ namespace {
 class TestConfigRepository : public neubau::common::ConfigRepository {
 public:
     TestConfigRepository()
-        : _discoveryInterval{
+        : neubau::common::ConfigRepository{
+              neubau::common::ConfigRepository::defaultDiscoveryInterval,
+              neubau::common::ConfigRepository::defaultThingInterval}
+        , _discoveryInterval{
               _discoverySubject.get_observable().as_dynamic()}
         , _thingInterval{
               _thingSubject.get_observable().as_dynamic()} {}

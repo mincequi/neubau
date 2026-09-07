@@ -1,6 +1,5 @@
 add_library(
     neubau_shelly
-    ShellyDiscovery.cpp
     ShellyThing.cpp
     ShellyThingFactory.cpp
 )

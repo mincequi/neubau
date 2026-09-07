@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/ThingDiscovery.hpp"
-#include "common/ThingFactory.hpp"
 #include "common/Thing.hpp"
 #include "common/ThingRepository.hpp"
 
@@ -24,25 +23,6 @@ template<typename Candidate>
         [&repository](Candidate candidate) {
             repository.add(
                 std::make_shared<Candidate>(std::move(candidate)));
-        },
-        std::move(onError),
-        std::move(onCompleted));
-}
-
-// Overload for discoveries that emit raw Candidates (not Things
-// themselves): each candidate is turned into a Thing via `factory`
-// before being added to the repository.
-template<typename Candidate, typename ThingT>
-    requires std::derived_from<ThingT, Thing>
-[[nodiscard]] auto addCandidatesToRepository(
-    ThingDiscovery<Candidate>& discovery,
-    const ThingFactory<Candidate, ThingT>& factory,
-    ThingRepository& repository,
-    std::function<void(std::exception_ptr)> onError,
-    std::function<void()> onCompleted) {
-    return discovery.candidates().subscribe(
-        [&factory, &repository](Candidate candidate) {
-            repository.add(factory.create(std::move(candidate)));
         },
         std::move(onError),
         std::move(onCompleted));

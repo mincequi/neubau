@@ -1,5 +1,6 @@
 #include "common/PortScanner.hpp"
 #include "common/Reactor.hpp"
+#include "common/Subnet.hpp"
 
 #include <hv/TcpServer.h>
 
@@ -21,10 +22,11 @@ int main() {
     }
     assert(openPort < 63000);
     neubau::common::PortScanner scanner{{
-        .addresses = {"127.0.0.1"},
+        .subnet = neubau::common::Subnet{"127.0.0.1/32"},
         .ports = {openPort, static_cast<std::uint16_t>(openPort + 1)},
         .connectTimeout = std::chrono::milliseconds{50},
         .maxConcurrency = 2,
+        .maxHosts = 1,
     }};
     std::vector<neubau::common::OpenPort> found;
     std::promise<void> completed;

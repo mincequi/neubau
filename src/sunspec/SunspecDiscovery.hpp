@@ -1,15 +1,13 @@
 #pragma once
 
 #include "common/ThingDiscovery.hpp"
-#include "common/PortScanner.hpp"
 #include "common/Thing.hpp"
 #include "modbus/ModbusSession.hpp"
+#include "modbus/ModbusThing.hpp"
 #include "sunspec/SunspecTypes.hpp"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <string>
@@ -17,23 +15,7 @@
 
 namespace neubau::sunspec {
 
-namespace testing {
-
-class SunspecDiscoveryTestAccess;
-
-} // namespace testing
-
-struct SunspecModbusDiscoveryOptions {
-    std::vector<std::string> cidrs;
-    std::uint16_t port{502};
-    std::chrono::milliseconds connectTimeout{250};
-    std::chrono::milliseconds responseTimeout{500};
-    std::size_t maxConcurrency{32};
-    std::size_t maxHosts{4096};
-};
-
 struct SunspecDiscoveryOptions {
-    SunspecModbusDiscoveryOptions modbus;
     std::size_t maxModels{256};
     std::size_t maxRegisterSpan{10000};
 };
@@ -67,7 +49,16 @@ std::ostream& operator<<(std::ostream& stream, const SunspecThing& thing);
 
 class SunspecDiscovery : public common::ThingDiscovery<SunspecThing> {
 public:
-    explicit SunspecDiscovery(SunspecDiscoveryOptions options);
+    // `modbusDiscovery` must outlive this SunspecDiscovery instance *and* any
+    // in-flight asynchronous stop it triggers: stop() only schedules the
+    // orchestration's shutdown on the reactor loop rather than stopping it
+    // synchronously, so the referenced Modbus discovery must remain valid
+    // until that queued shutdown has actually run (e.g. by keeping it alive
+    // at least until the reactor loop has processed pending work after this
+    // object is destroyed).
+    SunspecDiscovery(
+        SunspecDiscoveryOptions options,
+        common::ThingDiscovery<modbus::ModbusThing>& modbusDiscovery);
     ~SunspecDiscovery() noexcept override;
 
     SunspecDiscovery(const SunspecDiscovery&) = delete;
@@ -92,15 +83,6 @@ public:
         const std::vector<std::uint16_t>& registers);
 
 private:
-    using PortScannerFactory = std::function<std::shared_ptr<
-        common::ThingDiscovery<common::OpenPort>>(common::PortScannerOptions)>;
-
-    SunspecDiscovery(
-        SunspecDiscoveryOptions options,
-        PortScannerFactory portScannerFactory);
-
-    friend class testing::SunspecDiscoveryTestAccess;
-
     struct State;
     class Run;
 
