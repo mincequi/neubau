@@ -1,9 +1,11 @@
 #pragma once
 
 #include "common/PropertyMap.hpp"
+#include "common/Types.hpp"
 #include "common/flow.hpp"
 
 #include <rpp/subjects/behavior_subject.hpp>
+#include <rpp/subjects/publish_subject.hpp>
 
 #include <concepts>
 #include <optional>
@@ -29,6 +31,8 @@ public:
                 "thing id must not be empty"};
         }
     }
+
+    virtual ~Thing() = default;
 
     Thing(const Thing& other)
         : _id{other._id}
@@ -101,6 +105,31 @@ public:
         return _properties;
     }
 
+    // Called once per global poll tick with the current time as seconds
+    // since the epoch. Default is a no-op: Things with nothing to poll
+    // (e.g. purely event-driven Things) don't need to override this.
+    virtual void poll(Seconds now) {}
+
+    // Fires once notePollFailure() has been called kMaxConsecutiveFailures
+    // times in a row since the last notePollSuccess(). PollingService
+    // subscribes to this to remove the Thing from the repository.
+    [[nodiscard]] const Flow<Unit>& expired() const noexcept {
+        return _expiredFlow;
+    }
+
+protected:
+    // Subclasses call these from their poll() override to report the
+    // outcome of the in-flight read once it completes.
+    void notePollSuccess() noexcept {
+        _consecutiveFailures = 0;
+    }
+
+    void notePollFailure() {
+        if (++_consecutiveFailures >= kMaxConsecutiveFailures) {
+            _expiredSubject.get_observer().on_next(Unit{});
+        }
+    }
+
 private:
     friend class ThingRepository;
 
@@ -112,10 +141,16 @@ private:
         _subject.get_observer().on_next(_properties);
     }
 
+    static constexpr int kMaxConsecutiveFailures = 3;
+
     std::string _id;
     std::string _name;
     PropertyMap _properties;
+    int _consecutiveFailures{};
     rpp::subjects::behavior_subject<PropertyMap> _subject;
+    rpp::subjects::publish_subject<Unit> _expiredSubject;
+    Flow<Unit> _expiredFlow{
+        _expiredSubject.get_observable().as_dynamic()};
     Flow<PropertyMap> _propertiesFlow;
 };
 

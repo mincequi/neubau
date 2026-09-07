@@ -1,4 +1,5 @@
 #include "common/Thing.hpp"
+#include "common/Types.hpp"
 
 #include <cassert>
 #include <stdexcept>
@@ -9,6 +10,18 @@
 static_assert(!std::is_copy_assignable_v<neubau::common::Thing>);
 static_assert(!std::is_move_assignable_v<neubau::common::Thing>);
 static_assert(!std::is_default_constructible_v<neubau::common::Thing>);
+
+namespace {
+
+class TestableThing : public neubau::common::Thing {
+public:
+    using neubau::common::Thing::Thing;
+
+    void succeed() { notePollSuccess(); }
+    void fail() { notePollFailure(); }
+};
+
+} // namespace
 
 int main() {
     using neubau::common::PropertyKey;
@@ -90,4 +103,24 @@ int main() {
     assert(updates.size() == 3);
     assert(
         !thing.property<PropertyKey::thingInterval>());
+
+    thing.poll(Seconds{123});
+
+    using neubau::common::Unit;
+    TestableThing testable{"testable-1"};
+    std::vector<Unit> expiredEvents;
+    testable.expired().collect(
+        [&expiredEvents](Unit event) {
+            expiredEvents.push_back(event);
+        });
+
+    testable.fail();
+    assert(expiredEvents.empty());
+    testable.fail();
+    assert(expiredEvents.empty());
+    testable.fail();
+    assert(expiredEvents.size() == 1);
+
+    testable.succeed();
+    assert(expiredEvents.size() == 1);
 }
