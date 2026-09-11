@@ -23,7 +23,7 @@ static_assert(std::is_base_of_v<
               neubau::common::ThingDiscovery<neubau::modbus::ModbusThing>,
               neubau::modbus::ModbusDiscovery>);
 static_assert(std::is_base_of_v<
-              neubau::common::ThingFactory<neubau::shelly::ShellyThing>,
+              neubau::common::ThingFactory<neubau::mdns::MdnsService>,
               neubau::shelly::ShellyThingFactory>);
 static_assert(std::is_base_of_v<
               neubau::common::ThingDiscovery<neubau::sunspec::SunspecThing>,

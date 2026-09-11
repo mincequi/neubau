@@ -1,4 +1,3 @@
-#include "mdns/MdnsDiscovery.hpp"
 #include "shelly/ShellyThing.hpp"
 #include "shelly/ShellyThingFactory.hpp"
 
@@ -52,7 +51,19 @@ int main() {
     service.txt.clear();
     assert(!neubau::shelly::ShellyThingFactory::isShellyService(service));
 
-    neubau::mdns::MdnsDiscovery mdns;
-    const neubau::shelly::ShellyThingFactory factory{mdns};
-    (void)factory.things();
+    neubau::shelly::ShellyThingFactory factory;
+    const neubau::mdns::MdnsService connectableCandidate{
+        .serviceType = "_shelly._tcp.local.",
+        .instanceName = "shellyplus1pm-aabbcc._shelly._tcp.local.",
+        .hostname = "shellyplus1pm-aabbcc.local.",
+        .port = 80,
+        .addresses = {"192.168.1.10"},
+        .txt = {{"id", "shellyplus1pm-aabbcc"}},
+    };
+    const auto created = factory.tryCreate(connectableCandidate);
+    assert(created.has_value());
+    assert((*created)->id() == "shellyplus1pm-aabbcc");
+
+    // The same device must not be emitted a second time.
+    assert(!factory.tryCreate(connectableCandidate).has_value());
 }

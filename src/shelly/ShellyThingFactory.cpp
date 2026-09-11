@@ -1,28 +1,11 @@
 #include "shelly/ShellyThingFactory.hpp"
 
-#include <rpp/subjects/publish_subject.hpp>
 #include <algorithm>
 #include <cctype>
-#include <exception>
-#include <map>
-#include <set>
-#include <string>
 #include <string_view>
 #include <utility>
 
 namespace neubau::shelly {
-
-struct ShellyThingFactory::State {
-    explicit State(mdns::MdnsDiscovery& mdns)
-        : mdns{mdns}
-        , things{subject.get_observable().as_dynamic()} {}
-
-    mdns::MdnsDiscovery& mdns;
-    rpp::subjects::publish_subject<std::shared_ptr<ShellyThing>> subject;
-    common::Flow<std::shared_ptr<ShellyThing>> things;
-    std::map<std::string, mdns::MdnsService> discovered;
-    std::set<std::string> emitted;
-};
 
 namespace {
 
@@ -99,48 +82,26 @@ bool isConnectable(const mdns::MdnsService& service) {
 
 } // namespace
 
-ShellyThingFactory::ShellyThingFactory(mdns::MdnsDiscovery& mdns)
-    : _state{std::make_shared<State>(mdns)}
-    , _subscription{subscribeToMdns()} {
-    _state->mdns.discover(std::string{shellyServiceType});
-    _state->mdns.discover(std::string{httpServiceType});
-}
+std::optional<std::shared_ptr<common::Thing>> ShellyThingFactory::tryCreate(
+    mdns::MdnsService candidate) {
+    if (!isShellyService(candidate)) {
+        return std::nullopt;
+    }
 
-ShellyThingFactory::~ShellyThingFactory() {
-    _subscription.dispose();
-}
+    const auto key = lowercase(instanceId(candidate));
+    auto& merged = _discovered[key];
+    mergeService(merged, candidate);
+    if (_emitted.contains(key) || !isConnectable(merged)) {
+        return std::nullopt;
+    }
 
-rpp::composite_disposable_wrapper ShellyThingFactory::subscribeToMdns()
-    const {
-    auto state = _state;
-    return state->mdns.services().subscribe(
-        [state](const mdns::MdnsService& service) {
-            if (!isShellyService(service)) {
-                return;
-            }
-            const auto key = lowercase(instanceId(service));
-            auto& merged = state->discovered[key];
-            mergeService(merged, service);
-            if (state->emitted.contains(key) || !isConnectable(merged)) {
-                return;
-            }
-            state->emitted.insert(key);
-            state->subject.get_observer().on_next(create(merged));
-        },
-        [state](std::exception_ptr error) {
-            state->subject.get_observer().on_error(error);
-        },
-        [] {});
+    _emitted.insert(key);
+    return create(merged);
 }
 
 std::shared_ptr<ShellyThing> ShellyThingFactory::create(
     mdns::MdnsService candidate) {
     return std::make_shared<ShellyThing>(std::move(candidate));
-}
-
-const common::Flow<std::shared_ptr<ShellyThing>>& ShellyThingFactory::things()
-    const noexcept {
-    return _state->things;
 }
 
 bool ShellyThingFactory::isShellyService(

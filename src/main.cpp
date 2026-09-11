@@ -1,20 +1,25 @@
-#include "DiscoveryServices.hpp"
 #include <plog/Appenders/ColorConsoleAppender.h>
 #include <plog/Formatters/TxtFormatter.h>
 #include <plog/Init.h>
 #include <plog/Log.h>
 
-#include "common/Persistence.hpp"
-#include "common/Reactor.hpp"
+#include "bootstrap/DiscoveryService.hpp"
+#include "bootstrap/ThingFactoryService.hpp"
 #include "common/ConfigRepository.hpp"
+#include "common/Persistence.hpp"
 #include "common/PollingService.hpp"
-#include "thing/ThingRepository.hpp"
+#include "common/Reactor.hpp"
 #include "common/Timer.hpp"
+#include "thing/ThingRepository.hpp"
 #include "webapp/WebAppService.hpp"
+
+#include <rpp/disposables.hpp>
 
 #include <exception>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <utility>
 
 using namespace hv;
 using namespace std;
@@ -34,27 +39,42 @@ int main() {
         return result;
     }
 
-
-
     // Constructed only once the Reactor loop is confirmed running (see
     // below), so mDNS's UdpServer attaches to the already-running loop
     // instead of racing to spin it up on its own background thread (which
     // would otherwise leave SunSpec discovery racing that thread too).
-    optional<DiscoveryServices> discovery;
+    optional<bootstrap::DiscoveryService> discovery;
+    rpp::composite_disposable_wrapper discoverySubscription;
+    bootstrap::ThingFactoryService thingFactory;
     optional<common::Timer> timer;
     optional<common::PollingService> polling;
     function<void()> stopDiscoveryTicks;
 
     Reactor::run([&](hv::EventLoopPtr) {
-        discovery.emplace(things);
+        discovery.emplace();
+        discoverySubscription = discovery->candidates().subscribe(
+            [&things, &thingFactory](bootstrap::Candidate candidate) {
+                if (auto thing = thingFactory.tryCreate(std::move(candidate))) {
+                    things.add(std::move(*thing));
+                }
+            },
+            [](exception_ptr error) {
+                try {
+                    rethrow_exception(error);
+                } catch (const exception& exception) {
+                    PLOGE << "Discovery failed: " << exception.what();
+                }
+            },
+            [] { PLOGI << "Discovery stopped"; });
+        discovery->start();
 
         // Note: the first discoveryTick fires at the next epoch-aligned
-        // boundary, not immediately at startup (the DiscoveryServices
-        // constructor above already covers the startup discovery run).
+        // boundary, not immediately at startup (discovery->start() above
+        // already covers the startup discovery run).
         timer.emplace(config);
         polling.emplace(*timer, things);
         auto discoveryTicks = timer->discoveryTicks().subscribe(
-            [&discovery](common::TimePoint) { discovery->discover(); },
+            [&discovery](common::TimePoint) { discovery->rediscover(); },
             [](exception_ptr error) {
                 try {
                     rethrow_exception(error);
@@ -77,6 +97,7 @@ int main() {
     if (discovery) {
         discovery->stop();
     }
+    discoverySubscription.dispose();
     webAppService.stop();
     return 0;
 }

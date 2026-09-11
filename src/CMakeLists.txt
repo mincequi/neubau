@@ -4,16 +4,15 @@ add_subdirectory(modbus)
 add_subdirectory(shelly)
 add_subdirectory(sunspec)
 add_subdirectory(thing)
+add_subdirectory(bootstrap)
 add_subdirectory(webapp)
 
-add_executable(neubau main.cpp DiscoveryServices.cpp ThingFactories.cpp)
+add_executable(neubau main.cpp)
 
 target_link_libraries(
     neubau
     PRIVATE
-        neubau::mdns
-        neubau::shelly
-        neubau::sunspec
+        neubau::bootstrap
         neubau::webapp
         plog::plog
 )
